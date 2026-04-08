@@ -1,0 +1,16 @@
+{
+  "name": "bank-of-botetourt-hubspot-sync",
+  "version": "1.0.0",
+  "description": "Nightly sync from Fiserv Precision (CIF + DDA) to HubSpot Contacts and Deals",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "@hubspot/api-client": "^11.0.0",
+    "csv-parse": "^5.5.6",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "ssh2-sftp-client": "^10.0.0"
+  }
+}

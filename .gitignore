@@ -1,0 +1,21 @@
+# Environment / secrets
+.env
+
+# Dependencies
+node_modules/
+
+# Downloaded CSV data files
+data/
+
+# Sample, task, and spec folders
+sample/
+tasks/
+specs/
+
+# Logs
+logs/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
