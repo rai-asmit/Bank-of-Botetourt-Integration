@@ -5,7 +5,7 @@ const { parse } = require('csv-parse/sync');
 const { hashTaxId } = require('../utils/hash');
 const { parseFiservDate } = require('../utils/dateUtils');
 
-// CIF column positions (0-based) — two-row header is skipped before parsing
+// CIF column positions
 const COL = {
   TAX_ID: 0,
   EMAIL: 1,
