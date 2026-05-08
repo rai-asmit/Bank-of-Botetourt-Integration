@@ -249,7 +249,7 @@ async function runSync(runId, { cifPath, ddaPath }) {
         hash:       d.properties.taxidhashed,
         contactId:  d.contactId,
         dealId:     createdDealIdMap.get(key),
-        dealname:   d.properties.dealname,
+        dealname:   d.properties.account_type,
         dateOpened: d.properties.date_opened,
       });
     }

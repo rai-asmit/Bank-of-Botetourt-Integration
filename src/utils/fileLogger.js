@@ -3,6 +3,20 @@
 const fs   = require('fs');
 const path = require('path');
 
+function fmtTimestamp(d = new Date()) {
+  const p2 = n => String(n).padStart(2, '0');
+  const p3 = n => String(n).padStart(3, '0');
+  const off = -d.getTimezoneOffset();
+  const sign = off >= 0 ? '+' : '-';
+  const oh = Math.floor(Math.abs(off) / 60);
+  const om = Math.abs(off) % 60;
+  return (
+    `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())} ` +
+    `${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}.${p3(d.getMilliseconds())} ` +
+    `${sign}${p2(oh)}:${p2(om)}`
+  );
+}
+
 // Config is read lazily to avoid a circular-require at module load time
 function cfg() {
   return require('../config/config').config.logging;
@@ -33,7 +47,7 @@ function logPath(logDir, category) {
 
 // format log line as plain text
 function fmtText(level, category, action, fields) {
-  const ts   = new Date().toISOString();
+  const ts   = fmtTimestamp();
   const lv   = level.toUpperCase().padEnd(5);
   const cat  = category.toUpperCase().padEnd(7);
   const act  = action.padEnd(8);
@@ -50,7 +64,7 @@ function fmtText(level, category, action, fields) {
 // format log line as JSON (one object per line)
 function fmtJson(level, category, action, fields) {
   const entry = {
-    ts:       new Date().toISOString(),
+    ts:       fmtTimestamp(),
     level:    level.toUpperCase(),
     category: category.toUpperCase(),
     action,

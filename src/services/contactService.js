@@ -108,8 +108,7 @@ function buildContactProperties(contact) {
     state: contact.state,
     zip: contact.zip,
     int_bank_one: contact.intBankOne,
-    // user_defined_three: contact.userDefinedThree,
-    // user: contact.user,
+    user: contact.user,
     empl: contact.empl,
   };
 

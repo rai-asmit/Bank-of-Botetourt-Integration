@@ -55,7 +55,7 @@ function mapDdaRow(row) {
   return {
     taxIdRaw: taxIdRaw,
     taxIdHashed: hashTaxId(taxIdRaw),
-    dealname: row[COL.ACCOUNT_TYPE] || '',
+    accountType: row[COL.ACCOUNT_TYPE] || '',
     dateOpenedRaw: row[COL.DATE_OPENED] || '',
     dateOpened: parseFiservDate(row[COL.DATE_OPENED]),
     accountStatus: row[COL.STATUS] || '',

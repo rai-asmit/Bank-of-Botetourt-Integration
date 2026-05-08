@@ -9,7 +9,7 @@ async function searchDealsByHashes(hashes) {
   const DEAL_PROPERTIES = [
     'taxidhashed',
     'date_opened',
-    'dealname',
+    'account_type',
     'account_status',
     'current_balance',
     'delivery_code',
@@ -130,7 +130,8 @@ function buildDealProperties(ddaDeal, hash) {
   const { deals } = require('../config/config').config;
 
   const props = {
-    dealname: ddaDeal.dealname,
+    dealname: ddaDeal.accountType,
+    account_type: ddaDeal.accountType,
     taxidhashed: hash,
     account_status: ddaDeal.accountStatus,
     delivery_code: ddaDeal.deliveryCode,
@@ -138,16 +139,17 @@ function buildDealProperties(ddaDeal, hash) {
     dealstage: deals.stage,
   };
 
-  if (ddaDeal.dateOpened !== null) {
-    props.date_opened = ddaDeal.dateOpened;
-    props.closedate = ddaDeal.dateOpened;  // HubSpot "Close Date" field
-  }
+  if (ddaDeal.dateOpened !== null) props.date_opened = ddaDeal.dateOpened;
+  // date_closed: not yet available in DDA file — uncomment when column is added
+  // if (ddaDeal.dateClosed !== null) props.date_closed = ddaDeal.dateClosed;
   if (ddaDeal.currentBalance !== null) {
     props.current_balance = ddaDeal.currentBalance;
-    props.amount = String(ddaDeal.currentBalance); // HubSpot "Amount" field
+    props.amount = String(ddaDeal.currentBalance);
   }
   if (ddaDeal.lastDepositAmount !== null) props.last_deposit_amount = ddaDeal.lastDepositAmount;
   if (ddaDeal.lastWithdrawalAmount !== null) props.last_withdrawal_amount = ddaDeal.lastWithdrawalAmount;
+  // account_last_4: not yet available in DDA file — uncomment when column is added
+  // if (ddaDeal.accountLast4) props.account_last_4 = ddaDeal.accountLast4;
 
   return props;
 }

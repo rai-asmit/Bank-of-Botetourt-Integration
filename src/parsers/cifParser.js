@@ -26,8 +26,7 @@ const COL = {
   LOAN_ACCOUNTS: 16,
   TOTAL_LOANS: 17,
   INT_BANK_ONE: 18,
-  // USER_DEFINED_THREE: 19,
-    // USER: 19,
+  USER: 19,
   EMPL: 20,
 };
 
@@ -78,8 +77,7 @@ function mapCifRow(row) {
     numberOfLoanAccounts: parseNumber(row[COL.LOAN_ACCOUNTS]),
     totalLoans: parseNumber(row[COL.TOTAL_LOANS]),
     intBankOne: row[COL.INT_BANK_ONE] || '',
-    // userDefinedThree: row[COL.USER_DEFINED_THREE] || '',
-    // user: row[COL.USER] || '',
+    user: row[COL.USER] || '',
     empl: row[COL.EMPL] || '',
   };
 }
