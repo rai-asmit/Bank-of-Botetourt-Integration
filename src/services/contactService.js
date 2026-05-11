@@ -57,14 +57,13 @@ async function batchCreateContacts(propsList) {
         if (singleStatus !== 409) throw singleErr;
 
         const existingId = extractExistingId(singleErr);
-        if (!existingId) throw singleErr; // can't recover without the ID
+        if (!existingId) throw singleErr; //
 
         // update existing contact with new properties
         await callWithRetry(() => {
           return getClient().crm.contacts.basicApi.update(existingId, { properties });
         }, `updateConflictContact[${existingId}]`);
 
-        // flag as conflict so orchestrator counts it as update
         results.push({ id: existingId, properties: { email: properties.email }, _conflictResolved: true });
       }
     }
@@ -72,7 +71,7 @@ async function batchCreateContacts(propsList) {
   }
 }
 
-// pull existing contact ID out of a 409 error message
+// pulls out an id number from error message
 function extractExistingId(err) {
   const body = err.response && err.response.body;
   const message = (body && body.message) || err.message || '';
@@ -80,7 +79,7 @@ function extractExistingId(err) {
   return match ? match[1] : null;
 }
 
-// update up to 100 contacts in one API call
+// update up to 100 contacts 
 async function batchUpdateContacts(updates) {
   if (updates.length === 0) return [];
 
