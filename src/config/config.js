@@ -28,6 +28,7 @@ const config = {
     concurrency: 5,      // max parallel batch requests in-flight at once (write APIs)
     searchConcurrency: 1, // CRM Search API has a tighter per-second limit — keep serial
   },
+  syncCron: process.env.SYNC_CRON || '0 2 * * *',
   deals: {
     // Pipeline internal ID from HubSpot (Settings → Deals → Pipelines → "..." → Copy ID)
     pipeline: process.env.DEAL_PIPELINE_ID || 'default',

@@ -13,7 +13,7 @@ const {
   searchDealsByHashes,
   batchCreateDeals,
   batchUpdateDeals,
-  findDealByDateOpened,
+  findDealByCompositeKey,
   buildDealProperties,
 } = require('../services/dealService');
 const { chunk, runBatches } = require('../services/hubspotClient');
@@ -198,7 +198,7 @@ async function runSync(runId, { cifPath, ddaPath }) {
 
     for (const ddaDeal of ddaRows) {
       const properties = buildDealProperties(ddaDeal, hash);
-      const matching = findDealByDateOpened(existingDeals, ddaDeal.dateOpened);
+      const matching = findDealByCompositeKey(existingDeals, ddaDeal.dateOpened /*, ddaDeal.accountLast4 */);
 
       if (matching) {
         dealsToUpdate.push({ id: matching.id, properties });

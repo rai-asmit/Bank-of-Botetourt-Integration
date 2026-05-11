@@ -1,8 +1,9 @@
 'use strict';
 
-const { validate } = require('./config/config');
-const app = require('./server');
-const logger = require('./utils/logger');
+const { validate }        = require('./config/config');
+const app                 = require('./server');
+const logger              = require('./utils/logger');
+const { scheduleSyncCron } = require('./cron');
 
 // Fail fast if required env vars are missing
 validate();
@@ -26,4 +27,5 @@ app.listen(PORT, () => {
   logger.info('POST /sync         — trigger a sync run');
   logger.info('GET  /sync/status  — check if sync is in progress');
   logger.info('GET  /health       — health check');
+  scheduleSyncCron();
 });

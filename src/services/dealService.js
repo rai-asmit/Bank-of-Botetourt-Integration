@@ -108,7 +108,9 @@ function toIsoDateString(ts) {
 }
 
 
-function findDealByDateOpened(deals, dateOpened) {
+// Composite key: Tax ID Hash (implicit — deals array is pre-filtered by hash) + Date Opened
+// account_last_4 is the third key per spec but not yet available in source files — commented out below
+function findDealByCompositeKey(deals, dateOpened /*, accountLast4 */) {
   if (!dateOpened) return null;
   const targetDate = toIsoDateString(dateOpened);
 
@@ -116,10 +118,12 @@ function findDealByDateOpened(deals, dateOpened) {
     const dealDate = d.properties && d.properties.date_opened;
     if (!dealDate) return false;
 
-    // normalize date — HubSpot returns either YYYY-MM-DD or ms timestamp
     const normalized = /^\d{4}-\d{2}-\d{2}$/.test(dealDate)
       ? dealDate
       : toIsoDateString(Number(dealDate));
+
+    // account_last_4 match — uncomment when column is available in source files
+    // if (accountLast4 && d.properties.account_last_4 !== accountLast4) return false;
 
     return normalized === targetDate;
   }) || null;
@@ -159,6 +163,6 @@ module.exports = {
   batchCreateDeals,
   batchUpdateDeals,
   batchAssociateDeals,
-  findDealByDateOpened,
+  findDealByCompositeKey,
   buildDealProperties,
 };
