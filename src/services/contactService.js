@@ -1,6 +1,6 @@
 'use strict';
 
-const { getClient, callWithRetry } = require('./hubspotClient');
+const { getClient, callWithRetry, chunk, runBatches } = require('./hubspotClient');
 
 // search HubSpot contacts by hashed tax IDs (max 100)
 async function searchContactsByHashes(hashes) {
@@ -150,10 +150,39 @@ async function searchContactsByEmails(emails) {
   return map;
 }
 
+async function batchSearchContacts(hashes, batchSize, concurrency) {
+  const results = await runBatches(
+    chunk(hashes, batchSize),
+    concurrency,
+    (batch) => searchContactsByHashes(batch)
+  );
+  const merged = new Map();
+  for (const map of results) {
+    for (const [k, v] of map) merged.set(k, v);
+  }
+  return merged;
+}
+
+async function batchSearchContactsByEmail(contacts, batchSize, concurrency) {
+  const emails = contacts.map((c) => c.email);
+  const results = await runBatches(
+    chunk(emails, batchSize),
+    concurrency,
+    (batch) => searchContactsByEmails(batch)
+  );
+  const merged = new Map();
+  for (const map of results) {
+    for (const [k, v] of map) merged.set(k, v);
+  }
+  return merged;
+}
+
 module.exports = {
   searchContactsByHashes,
   searchContactsByEmails,
   batchCreateContacts,
   batchUpdateContacts,
   buildContactProperties,
+  batchSearchContacts,
+  batchSearchContactsByEmail,
 };

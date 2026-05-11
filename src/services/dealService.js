@@ -1,6 +1,7 @@
 'use strict';
 
-const { getClient, callWithRetry } = require('./hubspotClient');
+const { getClient, callWithRetry, chunk, runBatches } = require('./hubspotClient');
+const logger = require('../utils/logger');
 
 
 async function searchDealsByHashes(hashes) {
@@ -233,8 +234,43 @@ function buildSdaDealProperties(sdaDeal, hash) {
 }
 
 
+async function batchSearchDeals(hashes, batchSize, concurrency) {
+  let results;
+  try {
+    results = await runBatches(
+      chunk(hashes, batchSize),
+      concurrency,
+      (batch) => searchDealsByHashes(batch)
+    );
+  } catch (err) {
+    const status = err.code || (err.response && err.response.status);
+    if (status === 400) {
+      logger.warn(
+        'Deal search returned HTTP 400 — the "taxidhashed" property may not ' +
+        'exist or may not be searchable on the Deals object in this HubSpot portal. ' +
+        'Treating all deals as new for this run.'
+      );
+      return new Map();
+    }
+    throw err;
+  }
+
+  const merged = new Map();
+  for (const map of results) {
+    for (const [k, v] of map) {
+      if (!merged.has(k)) {
+        merged.set(k, v);
+      } else {
+        merged.get(k).push(...v);
+      }
+    }
+  }
+  return merged;
+}
+
 module.exports = {
   searchDealsByHashes,
+  batchSearchDeals,
   batchCreateDeals,
   batchUpdateDeals,
   batchAssociateDeals,
