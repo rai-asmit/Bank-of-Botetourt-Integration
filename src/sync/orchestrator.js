@@ -1,7 +1,10 @@
 'use strict';
 
-const { parseCifFile } = require('../parsers/cifParser');
-const { parseDdaFile } = require('../parsers/ddaParser');
+const { parseCifFile }  = require('../parsers/cifParser');
+const { parseDdaFile }  = require('../parsers/ddaParser');
+const { parseCdFile }   = require('../parsers/cdParser');
+const { parseLnaFile }  = require('../parsers/lnaParser');
+const { parseSdaFile }  = require('../parsers/sdaParser');
 const {
   searchContactsByHashes,
   searchContactsByEmails,
@@ -15,6 +18,9 @@ const {
   batchUpdateDeals,
   findDealByCompositeKey,
   buildDealProperties,
+  buildCdDealProperties,
+  buildLnaDealProperties,
+  buildSdaDealProperties,
 } = require('../services/dealService');
 const { chunk, runBatches } = require('../services/hubspotClient');
 const logger = require('../utils/logger');
@@ -22,8 +28,7 @@ const fileLogger = require('../utils/fileLogger');
 const { config } = require('../config/config');
 
 
-async function runSync(runId, { cifPath, ddaPath }) {
-  //checking file path
+async function runSync(runId, { cifPath, ddaPath, cdPath, lnaPath, sdaPath }) {
   if (!cifPath) throw new Error('runSync: cifPath is required');
   if (!ddaPath) throw new Error('runSync: ddaPath is required');
   //batch size and concurrency from config.api
@@ -180,25 +185,103 @@ async function runSync(runId, { cifPath, ddaPath }) {
     }
   }
 
-  // Batch search existing deals 
-  const ddaHashes = [...ddaMap.keys()];
-  logger.info(`Searching existing deals for ${ddaHashes.length} customer hashes (batch)...`);
-  const existingDealsMap = await batchSearchDeals(ddaHashes, batchSize, searchConcurrency);
-  logger.info(`Found deals for ${existingDealsMap.size} customers`);
+  // DDA deals
+  const ddaResult = await syncAccountDeals(
+    ddaMap, contactIdMap, buildDealProperties, 'DDA',
+    { batchSize, concurrency, searchConcurrency, runId }
+  );
+  stats.dealsCreated += ddaResult.created;
+  stats.dealsUpdated += ddaResult.updated;
 
-  //Match DDA rows against existing deals
+  // CD deals
+  let cdMap = new Map();
+  if (cdPath) {
+    logger.info(`Parsing CD file: ${cdPath}`);
+    cdMap = parseCdFile(cdPath);
+    logger.info(`CD unique customers loaded: ${cdMap.size}`);
+  }
+
+  const cdResult = await syncAccountDeals(
+    cdMap, contactIdMap, buildCdDealProperties, 'CD',
+    { batchSize, concurrency, searchConcurrency, runId }
+  );
+  stats.dealsCreated += cdResult.created;
+  stats.dealsUpdated += cdResult.updated;
+
+  // LNA deals
+  let lnaMap = new Map();
+  if (lnaPath) {
+    logger.info(`Parsing LNA file: ${lnaPath}`);
+    lnaMap = parseLnaFile(lnaPath);
+    logger.info(`LNA unique customers loaded: ${lnaMap.size}`);
+  }
+
+  const lnaResult = await syncAccountDeals(
+    lnaMap, contactIdMap, buildLnaDealProperties, 'LNA',
+    { batchSize, concurrency, searchConcurrency, runId }
+  );
+  stats.dealsCreated += lnaResult.created;
+  stats.dealsUpdated += lnaResult.updated;
+
+  // SDA deals
+  let sdaMap = new Map();
+  if (sdaPath) {
+    logger.info(`Parsing SDA file: ${sdaPath}`);
+    sdaMap = parseSdaFile(sdaPath);
+    logger.info(`SDA unique customers loaded: ${sdaMap.size}`);
+  }
+
+  const sdaResult = await syncAccountDeals(
+    sdaMap, contactIdMap, buildSdaDealProperties, 'SDA',
+    { batchSize, concurrency, searchConcurrency, runId }
+  );
+  stats.dealsCreated += sdaResult.created;
+  stats.dealsUpdated += sdaResult.updated;
+
+  const durationS = Math.round((Date.now() - startTimeMs) / 1000);
+  logger.info('=== Sync complete ===');
+  logger.info(`Contacts — created: ${stats.contactsCreated}, updated: ${stats.contactsUpdated}, skipped: ${stats.contactsSkipped}`);
+  logger.info(`Deals     — created: ${stats.dealsCreated}, updated: ${stats.dealsUpdated}`);
+
+  fileLogger.syncComplete(runId, { ...stats, durationS });
+
+  return stats;
+}
+
+
+// Generic deal sync — works for DDA, CD, LNA, SDA
+async function syncAccountDeals(accountMap, contactIdMap, buildPropsFn, label, { batchSize, concurrency, searchConcurrency, runId }) {
+  if (accountMap.size === 0) {
+    logger.info(`${label}: no rows to process`);
+    return { created: 0, updated: 0 };
+  }
+
+  const hashes = [...accountMap.keys()];
+  logger.info(`${label}: searching existing deals for ${hashes.length} customer hashes (batch)...`);
+  const existingDealsMap = await batchSearchDeals(hashes, batchSize, searchConcurrency);
+  logger.info(`${label}: found deals for ${existingDealsMap.size} customers`);
+
   const dealsToUpdate = [];
   const dealsToCreate = [];
 
-  for (const [hash, ddaRows] of ddaMap) {
+  for (const [hash, rows] of accountMap) {
     const contactId = contactIdMap.get(hash);
-    if (!contactId) continue; 
+    if (!contactId) continue;
 
     const existingDeals = existingDealsMap.get(hash) || [];
 
-    for (const ddaDeal of ddaRows) {
-      const properties = buildDealProperties(ddaDeal, hash);
-      const matching = findDealByCompositeKey(existingDeals, ddaDeal.dateOpened /*, ddaDeal.accountLast4 */);
+    for (const row of rows) {
+      if (!row.dateOpened) {
+        logger.warn(`${label}: skipping row (hash=${hash}) — dateOpened is missing, cannot form composite key`);
+        continue;
+      }
+      if (!row.accountLast4) {
+        logger.warn(`${label}: skipping row (hash=${hash}) — accountLast4 is empty, cannot form composite key`);
+        continue;
+      }
+
+      const properties = buildPropsFn(row, hash);
+      const matching = findDealByCompositeKey(existingDeals, row.dateOpened, row.accountLast4);
 
       if (matching) {
         dealsToUpdate.push({ id: matching.id, properties });
@@ -208,36 +291,21 @@ async function runSync(runId, { cifPath, ddaPath }) {
     }
   }
 
-  //  Batch-update matched deals 
   if (dealsToUpdate.length > 0) {
-    logger.info(`Updating ${dealsToUpdate.length} existing deals (batch)...`);
-    await runBatches(chunk(dealsToUpdate, batchSize), concurrency, (batch) => {
-      return batchUpdateDeals(batch);
-    });
-    stats.dealsUpdated = dealsToUpdate.length;
-    logger.info(`Updated ${dealsToUpdate.length} deals`);
-
+    logger.info(`${label}: updating ${dealsToUpdate.length} existing deals (batch)...`);
+    await runBatches(chunk(dealsToUpdate, batchSize), concurrency, (batch) => batchUpdateDeals(batch));
     for (const d of dealsToUpdate) {
       fileLogger.dealUpdated(runId, { hash: d.properties.taxidhashed, dealId: d.id });
     }
+    logger.info(`${label}: updated ${dealsToUpdate.length} deals`);
   }
 
-  // Batch-create new deals
   if (dealsToCreate.length > 0) {
-    logger.info(`Creating ${dealsToCreate.length} new deals (batch)...`);
+    logger.info(`${label}: creating ${dealsToCreate.length} new deals (batch)...`);
+    const createResults = await runBatches(chunk(dealsToCreate, batchSize), concurrency, (batch) => batchCreateDeals(batch));
 
-    const dealCreateResults = await runBatches(
-      chunk(dealsToCreate, batchSize),
-      concurrency,
-      (batch) => batchCreateDeals(batch)
-    );
-
-    stats.dealsCreated = dealsToCreate.length;
-    logger.info(`Created ${dealsToCreate.length} deals`);
-
-  
     const createdDealIdMap = new Map();
-    for (const batchResult of dealCreateResults) {
+    for (const batchResult of createResults) {
       for (const deal of batchResult) {
         const key = `${deal.properties.taxidhashed}|${deal.properties.date_opened}`;
         createdDealIdMap.set(key, deal.id);
@@ -249,20 +317,14 @@ async function runSync(runId, { cifPath, ddaPath }) {
         hash:       d.properties.taxidhashed,
         contactId:  d.contactId,
         dealId:     createdDealIdMap.get(key),
-        dealname:   d.properties.account_type,
+        dealname:   d.properties.dealname,
         dateOpened: d.properties.date_opened,
       });
     }
+    logger.info(`${label}: created ${dealsToCreate.length} deals`);
   }
 
-  const durationS = Math.round((Date.now() - startTimeMs) / 1000);
-  logger.info('=== Sync complete ===');
-  logger.info(`Contacts — created: ${stats.contactsCreated}, updated: ${stats.contactsUpdated}, skipped: ${stats.contactsSkipped}`);
-  logger.info(`Deals     — created: ${stats.dealsCreated}, updated: ${stats.dealsUpdated}`);
-
-  fileLogger.syncComplete(runId, { ...stats, durationS });
-
-  return stats;
+  return { created: dealsToCreate.length, updated: dealsToUpdate.length };
 }
 
 
@@ -333,7 +395,10 @@ async function batchSearchDeals(hashes, batchSize, concurrency) {
 function deduplicateCifRows(cifRows) {
   const seen = new Map();
   for (const row of cifRows) {
-    if (!seen.has(row.taxIdHashed)) {
+    const existing = seen.get(row.taxIdHashed);
+    // prefer a row that has an email over one that doesn't —
+    // avoids silently dropping a customer whose first CIF row has no email but a later row does
+    if (!existing || (!existing.email && row.email)) {
       seen.set(row.taxIdHashed, row);
     }
   }

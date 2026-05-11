@@ -6,20 +6,23 @@ const { hashTaxId } = require('../utils/hash');
 const { parseFiservDate } = require('../utils/dateUtils');
 const { buildColMap } = require('../utils/colMap');
 
+// The CD file has two columns with the identical merged label "Status Desc"
+// (columns 5 and 6 — a duplicate Status Desc Fiserv includes).  buildColMap
+// uses indexOf so STATUS always resolves to the FIRST occurrence (col 5).
+// Column 6 is never referenced and is effectively skipped.
 const EXPECTED_COLUMNS = {
-  TAX_ID:               'Tax ID Number',
+  TAX_ID:                'Tax ID Number',
   ACCOUNT_NUMBER_MASKED: 'Account Number Masked',
-  ACCOUNT_TYPE:         'Type Code External Description',
-  DATE_OPENED:          'Date Opened',
-  DATE_CLOSED:          'Date Closed',
-  STATUS:               'Status Desc',
-  CURRENT_BALANCE:      'Current Balance',
-  DELIVERY_CODE:        'Delivery Code',
-  LAST_DEPOSIT:         'Amount Last Deposit',
-  LAST_WITHDRAWAL:      'Amount Last Withdrawal',
+  TYPE_CODE:             'Type Code External Description',
+  DATE_OPENED:           'Date Opened',
+  DATE_CLOSED:           'Date Closed',
+  STATUS:                'Status Desc',
+  CURRENT_BALANCE:       'Current Balance',
+  DELIVERY_CODE:         'Delivery Code',
+  OPENMAT_BALANCE:       'Open/Mat Balance',
 };
 
-function parseDdaFile(filePath) {
+function parseCdFile(filePath) {
   const raw = fs.readFileSync(filePath, 'utf8');
 
   const allRows = parse(raw, {
@@ -28,28 +31,28 @@ function parseDdaFile(filePath) {
     trim: true,
   });
 
-  const COL = buildColMap(allRows[0], allRows[1], EXPECTED_COLUMNS, 'DDA');
+  const COL = buildColMap(allRows[0], allRows[1], EXPECTED_COLUMNS, 'CD');
   const minCols = Math.max(...Object.values(COL)) + 1;
 
   // First 2 rows are the two-line header — skip them
   const dataRows = allRows.slice(2);
 
-  const ddaMap = new Map();
+  const cdMap = new Map();
 
   for (const row of dataRows) {
-    const deal = mapDdaRow(row, COL, minCols);
+    const deal = mapCdRow(row, COL, minCols);
     if (!deal) continue;
 
-    if (!ddaMap.has(deal.taxIdHashed)) {
-      ddaMap.set(deal.taxIdHashed, []);
+    if (!cdMap.has(deal.taxIdHashed)) {
+      cdMap.set(deal.taxIdHashed, []);
     }
-    ddaMap.get(deal.taxIdHashed).push(deal);
+    cdMap.get(deal.taxIdHashed).push(deal);
   }
 
-  return ddaMap;
+  return cdMap;
 }
 
-function mapDdaRow(row, COL, minCols) {
+function mapCdRow(row, COL, minCols) {
   if (row.length < minCols) return null;
 
   const taxIdRaw = row[COL.TAX_ID] || '';
@@ -62,14 +65,13 @@ function mapDdaRow(row, COL, minCols) {
     taxIdRaw,
     taxIdHashed: hashTaxId(taxIdRaw),
     accountLast4,
-    accountType: row[COL.ACCOUNT_TYPE] || '',
+    typeCodeExternalDescription: (row[COL.TYPE_CODE] || '').trim(),
     dateOpened: parseFiservDate(row[COL.DATE_OPENED]),
     dateClosed: parseFiservDate(row[COL.DATE_CLOSED]),
-    accountStatus: row[COL.STATUS] || '',
+    accountStatus: (row[COL.STATUS] || '').trim(),
     currentBalance: parseNumber(row[COL.CURRENT_BALANCE]),
-    deliveryCode: row[COL.DELIVERY_CODE] || '',
-    lastDepositAmount: parseNumber(row[COL.LAST_DEPOSIT]),
-    lastWithdrawalAmount: parseNumber(row[COL.LAST_WITHDRAWAL]),
+    deliveryCode: (row[COL.DELIVERY_CODE] || '').trim(),
+    openmatBalance: parseNumber(row[COL.OPENMAT_BALANCE]),
   };
 }
 
@@ -79,4 +81,4 @@ function parseNumber(raw) {
   return isNaN(n) ? null : n;
 }
 
-module.exports = { parseDdaFile };
+module.exports = { parseCdFile };

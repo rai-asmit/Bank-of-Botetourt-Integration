@@ -5,7 +5,6 @@
 node_modules/
 
 # Downloaded CSV data files
-data/
 
 # Sample, task, and spec folders
 sample/

@@ -16,30 +16,28 @@ const config = {
     port:       parseInt(process.env.SFTP_PORT || '22', 10),
     user:       process.env.SFTP_USER       || '',
     password:   process.env.SFTP_PASSWORD   || '',
-    privateKey: process.env.SFTP_PRIVATE_KEY || '', // path to private key file (optional)
-    remoteDir:  process.env.SFTP_REMOTE_DIR || '/', // remote directory to list/download from
-    dataDir:    process.env.DATA_DIR        || './data', // local folder for downloaded files
+    privateKey: process.env.SFTP_PRIVATE_KEY || '', 
+    remoteDir:  process.env.SFTP_REMOTE_DIR || '/', 
+    dataDir:    process.env.DATA_DIR        || './data', 
   },
   api: {
-    delayMs: 110,        // ms between HubSpot API calls (rate limit: ~10 req/s)
-    maxRetries: 3,       // retry attempts on transient errors
-    retryDelayMs: 1000,  // base delay before retry (doubles each attempt)
-    batchSize: 100,      // max records per batch API call (HubSpot limit)
-    concurrency: 5,      // max parallel batch requests in-flight at once (write APIs)
-    searchConcurrency: 1, // CRM Search API has a tighter per-second limit — keep serial
+    delayMs: 110,        
+    maxRetries: 3,       // retry attempts
+    retryDelayMs: 1000,  // base delay before retry 
+    batchSize: 100,      // max records per batch API call 
+    concurrency: 5,      // max parallel batch request
+    searchConcurrency: 1, // CRM Search API 
   },
   syncCron: process.env.SYNC_CRON || '0 2 * * *',
   deals: {
-    // Pipeline internal ID from HubSpot (Settings → Deals → Pipelines → "..." → Copy ID)
-    pipeline: process.env.DEAL_PIPELINE_ID || 'default',
-    // Stage internal ID within the pipeline (copy from the same settings page)
-    stage: process.env.DEAL_STAGE_ID || 'appointmentscheduled',
+    pipeline: process.env.DEAL_PIPELINE_ID || '',
+    stage: process.env.DEAL_STAGE_ID || '',
   },
 };
 
 function validate() {
   if (!config.hubspot.accessToken) {
-    throw new Error('Missing HUBSPOT_ACCESS_TOKEN in environment. Copy .env.example → .env and fill it in.');
+    throw new Error('Missing HUBSPOT_ACCESS_TOKEN in environment.');
   }
 
   if (!config.sftp.host) {
@@ -50,6 +48,12 @@ function validate() {
   }
   if (!config.sftp.password && !config.sftp.privateKey) {
     throw new Error('Missing SFTP_PASSWORD or SFTP_PRIVATE_KEY in environment.');
+  }
+  if (!config.deals.pipeline) {
+    throw new Error('Missing DEAL_PIPELINE_ID in environment. Copy from HubSpot Settings → Deals → Pipelines → "..." → Copy ID.');
+  }
+  if (!config.deals.stage) {
+    throw new Error('Missing DEAL_STAGE_ID in environment. Copy from HubSpot Settings → Deals → Pipelines (stage ID).');
   }
 }
 

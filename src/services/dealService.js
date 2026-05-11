@@ -9,12 +9,20 @@ async function searchDealsByHashes(hashes) {
   const DEAL_PROPERTIES = [
     'taxidhashed',
     'date_opened',
+    'date_closed',
+    'account_last_4',
+    // DDA
     'account_type',
     'account_status',
     'current_balance',
     'delivery_code',
     'last_deposit_amount',
     'last_withdrawal_amount',
+    // CD
+    'type_code_external_description',
+    'openmat_balance',
+    // LNA
+    'opening_advance',
   ];
 
   const allDeals = [];
@@ -108,9 +116,8 @@ function toIsoDateString(ts) {
 }
 
 
-// Composite key: Tax ID Hash (implicit — deals array is pre-filtered by hash) + Date Opened
-// account_last_4 is the third key per spec but not yet available in source files — commented out below
-function findDealByCompositeKey(deals, dateOpened /*, accountLast4 */) {
+// Composite key: Tax ID Hash (implicit — deals array is pre-filtered by hash) + Date Opened + Account Last 4
+function findDealByCompositeKey(deals, dateOpened, accountLast4) {
   if (!dateOpened) return null;
   const targetDate = toIsoDateString(dateOpened);
 
@@ -122,10 +129,10 @@ function findDealByCompositeKey(deals, dateOpened /*, accountLast4 */) {
       ? dealDate
       : toIsoDateString(Number(dealDate));
 
-    // account_last_4 match — uncomment when column is available in source files
-    // if (accountLast4 && d.properties.account_last_4 !== accountLast4) return false;
+    if (normalized !== targetDate) return false;
+    if (accountLast4 && d.properties.account_last_4 !== accountLast4) return false;
 
-    return normalized === targetDate;
+    return true;
   }) || null;
 }
 
@@ -144,19 +151,87 @@ function buildDealProperties(ddaDeal, hash) {
   };
 
   if (ddaDeal.dateOpened !== null) props.date_opened = ddaDeal.dateOpened;
-  // date_closed: not yet available in DDA file — uncomment when column is added
-  // if (ddaDeal.dateClosed !== null) props.date_closed = ddaDeal.dateClosed;
+  if (ddaDeal.dateClosed !== null) props.date_closed = ddaDeal.dateClosed;
   if (ddaDeal.currentBalance !== null) {
     props.current_balance = ddaDeal.currentBalance;
     props.amount = String(ddaDeal.currentBalance);
   }
   if (ddaDeal.lastDepositAmount !== null) props.last_deposit_amount = ddaDeal.lastDepositAmount;
   if (ddaDeal.lastWithdrawalAmount !== null) props.last_withdrawal_amount = ddaDeal.lastWithdrawalAmount;
-  // account_last_4: not yet available in DDA file — uncomment when column is added
-  // if (ddaDeal.accountLast4) props.account_last_4 = ddaDeal.accountLast4;
+  if (ddaDeal.accountLast4) props.account_last_4 = ddaDeal.accountLast4;
 
   return props;
 }
+
+function buildCdDealProperties(cdDeal, hash) {
+  const { deals } = require('../config/config').config;
+
+  const props = {
+    dealname: cdDeal.typeCodeExternalDescription,
+    type_code_external_description: cdDeal.typeCodeExternalDescription,
+    taxidhashed: hash,
+    account_status: cdDeal.accountStatus,
+    delivery_code: cdDeal.deliveryCode,
+    pipeline: deals.pipeline,
+    dealstage: deals.stage,
+  };
+
+  if (cdDeal.dateOpened !== null) props.date_opened = cdDeal.dateOpened;
+  if (cdDeal.dateClosed !== null) props.date_closed = cdDeal.dateClosed;
+  if (cdDeal.currentBalance !== null) {
+    props.current_balance = cdDeal.currentBalance;
+    props.amount = String(cdDeal.currentBalance);
+  }
+  if (cdDeal.openmatBalance !== null) props.openmat_balance = cdDeal.openmatBalance;
+  if (cdDeal.accountLast4) props.account_last_4 = cdDeal.accountLast4;
+
+  return props;
+}
+
+
+function buildLnaDealProperties(lnaDeal, hash) {
+  const { deals } = require('../config/config').config;
+
+  const props = {
+    dealname: lnaDeal.typeCodeExternalDescription,
+    type_code_external_description: lnaDeal.typeCodeExternalDescription,
+    taxidhashed: hash,
+    account_status: lnaDeal.accountStatus,
+    pipeline: deals.pipeline,
+    dealstage: deals.stage,
+  };
+
+  if (lnaDeal.dateOpened !== null) props.date_opened = lnaDeal.dateOpened;
+  if (lnaDeal.dateClosed !== null) props.date_closed = lnaDeal.dateClosed;
+  if (lnaDeal.currentBalance !== null) {
+    props.current_balance = lnaDeal.currentBalance;
+    props.amount = String(lnaDeal.currentBalance);
+  }
+  if (lnaDeal.openingAdvance !== null) props.opening_advance = lnaDeal.openingAdvance;
+  if (lnaDeal.accountLast4) props.account_last_4 = lnaDeal.accountLast4;
+
+  return props;
+}
+
+
+function buildSdaDealProperties(sdaDeal, hash) {
+  const { deals } = require('../config/config').config;
+
+  const props = {
+    dealname: sdaDeal.typeCodeExternalDescription,
+    type_code_external_description: sdaDeal.typeCodeExternalDescription,
+    taxidhashed: hash,
+    account_status: sdaDeal.accountStatus,
+    pipeline: deals.pipeline,
+    dealstage: deals.stage,
+  };
+
+  if (sdaDeal.dateOpened !== null) props.date_opened = sdaDeal.dateOpened;
+  if (sdaDeal.accountLast4) props.account_last_4 = sdaDeal.accountLast4;
+
+  return props;
+}
+
 
 module.exports = {
   searchDealsByHashes,
@@ -165,4 +240,7 @@ module.exports = {
   batchAssociateDeals,
   findDealByCompositeKey,
   buildDealProperties,
+  buildCdDealProperties,
+  buildLnaDealProperties,
+  buildSdaDealProperties,
 };

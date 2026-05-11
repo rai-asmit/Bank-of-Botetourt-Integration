@@ -4,60 +4,64 @@ const fs = require('fs');
 const { parse } = require('csv-parse/sync');
 const { hashTaxId } = require('../utils/hash');
 const { parseFiservDate } = require('../utils/dateUtils');
+const { buildColMap } = require('../utils/colMap');
 
-// CIF column positions
-const COL = {
-  TAX_ID: 0,
-  EMAIL: 1,
-  FIRSTNAME: 2,
-  LASTNAME: 3,
-  DATE_OF_BIRTH: 4,
-  DATE_OPENED: 5,
-  OWNER_CODE: 6,
-  BR: 7,
-  ADDRESS: 8,
-  ADDRESS2: 9,
-  CITY: 10,
-  STATE: 11,
-  ZIP: 12,
-  DDA_ACCTS: 13,
-  CD_ACCOUNTS: 14,
-  TOTAL_DEPOSITS: 15,
-  LOAN_ACCOUNTS: 16,
-  TOTAL_LOANS: 17,
-  INT_BANK_ONE: 18,
-  USER: 19,
-  EMPL: 20,
+// Human-readable column labels as they appear when the two Fiserv header rows
+// are merged (row0 + " " + row1, trimmed).  buildColMap resolves each to its
+// actual column index at parse time, so reordered columns are handled safely.
+const EXPECTED_COLUMNS = {
+  TAX_ID:         'Tax ID Number',
+  EMAIL:          'Primary Email',
+  FIRSTNAME:      'First Name/ Name',
+  LASTNAME:       'Last Name',
+  DATE_OF_BIRTH:  'Date of Birth/Age',
+  DATE_OPENED:    'Date Opened',
+  OWNER_CODE:     'Own Code',
+  BR:             'Br',
+  ADDRESS:        'Address Line 2',
+  ADDRESS2:       'Address Line 3',
+  CITY:           'City',
+  STATE:          'State',
+  ZIP:            'ZIP Code',
+  DDA_ACCTS:      'DDA Accts',
+  CD_ACCOUNTS:    'CD Number of Accounts',
+  TOTAL_DEPOSITS: 'Total Deposits',
+  LOAN_ACCOUNTS:  'Loan Number of Accounts',
+  TOTAL_LOANS:    'Total Loans',
+  INT_BANK_ONE:   'Int. Bank One',
+  USER:           'User Defined Three',
+  EMPL:           'Empl Code',
 };
 
-// read CIF CSV and return array of contact objects
 function parseCifFile(filePath) {
   const raw = fs.readFileSync(filePath, 'utf8');
 
-  // parse rows and trim whitespace from every cell
   const allRows = parse(raw, {
     relax_quotes: true,
     skip_empty_lines: true,
     trim: true,
   });
 
+  // Resolve column positions dynamically from the two-row Fiserv header
+  const COL = buildColMap(allRows[0], allRows[1], EXPECTED_COLUMNS, 'CIF');
+  const minCols = Math.max(...Object.values(COL)) + 1;
+
   // First 2 rows are the two-line header — skip them
   const dataRows = allRows.slice(2);
 
   return dataRows
-    .map((row) => mapCifRow(row))
+    .map((row) => mapCifRow(row, COL, minCols))
     .filter((contact) => contact !== null);
 }
 
-// map one CSV row to a contact object, null if invalid
-function mapCifRow(row) {
-  if (row.length < 18) return null;
+function mapCifRow(row, COL, minCols) {
+  if (row.length < minCols) return null;
 
   const taxIdRaw = row[COL.TAX_ID] || '';
   if (!taxIdRaw.trim()) return null;
 
   return {
-    taxIdRaw: taxIdRaw,
+    taxIdRaw,
     taxIdHashed: hashTaxId(taxIdRaw),
     email: row[COL.EMAIL] || '',
     firstname: row[COL.FIRSTNAME] || '',
@@ -82,7 +86,6 @@ function mapCifRow(row) {
   };
 }
 
-// parse padded number string like " 00001234.56" to float
 function parseNumber(raw) {
   if (!raw || !raw.trim()) return null;
   const n = parseFloat(raw.trim());

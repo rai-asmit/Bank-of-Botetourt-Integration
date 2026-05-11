@@ -19,10 +19,13 @@ function parseDateFromName(name) {
   return new Date(Date.UTC(YYYY, MM - 1, DD, hh, mm, ss));
 }
 
-// from a list of SFTP file entries, return the latest CIF and DDA files
+// from a list of SFTP file entries, return the latest CIF, DDA, CD, LNA, and SDA files
 function selectLatestFiles(files) {
   let latestCif = null;
   let latestDda = null;
+  let latestCd  = null;
+  let latestLna = null;
+  let latestSda = null;
 
   for (const file of files) {
     const name = file.name;
@@ -31,6 +34,12 @@ function selectLatestFiles(files) {
 
     if (/hubspotdda/i.test(name)) {
       if (!latestDda || date > latestDda.date) latestDda = { file, date };
+    } else if (/hubspotlna/i.test(name)) {
+      if (!latestLna || date > latestLna.date) latestLna = { file, date };
+    } else if (/hubspotsda/i.test(name)) {
+      if (!latestSda || date > latestSda.date) latestSda = { file, date };
+    } else if (/hubspotcd/i.test(name)) {
+      if (!latestCd  || date > latestCd.date)  latestCd  = { file, date };
     } else if (/hubspotdownload/i.test(name)) {
       if (!latestCif || date > latestCif.date) latestCif = { file, date };
     }
@@ -39,6 +48,9 @@ function selectLatestFiles(files) {
   return {
     latestCif: latestCif ? latestCif.file : null,
     latestDda: latestDda ? latestDda.file : null,
+    latestCd:  latestCd  ? latestCd.file  : null,
+    latestLna: latestLna ? latestLna.file : null,
+    latestSda: latestSda ? latestSda.file : null,
   };
 }
 
@@ -60,7 +72,7 @@ async function fetchFilesFromSFTP() {
   await sftp.connect(connectOptions);
   logger.info('SFTP: connected');
 
-  const downloaded = { cifPath: null, ddaPath: null };
+  const downloaded = { cifPath: null, ddaPath: null, cdPath: null, lnaPath: null, sdaPath: null };
 
   try {
     logger.info(`SFTP: listing "${remoteDir}"`);
@@ -69,14 +81,38 @@ async function fetchFilesFromSFTP() {
     // only regular files, skip directories
     const files = listing.filter((f) => f.type === '-');
 
-    const { latestCif, latestDda } = selectLatestFiles(files);
+    const { latestCif, latestDda, latestCd, latestLna, latestSda } = selectLatestFiles(files);
 
     if (!latestCif) throw new Error(`SFTP: no CIF file found in "${remoteDir}"`);
     if (!latestDda) throw new Error(`SFTP: no DDA file found in "${remoteDir}"`);
 
-    logger.info(`SFTP: selected CIF "${latestCif.name}", DDA "${latestDda.name}"`);
+    const filesToDownload = [latestCif, latestDda];
+    if (latestCd) {
+      filesToDownload.push(latestCd);
+    } else {
+      logger.warn(`SFTP: no CD file found in "${remoteDir}" — CD sync will be skipped`);
+    }
+    if (latestLna) {
+      filesToDownload.push(latestLna);
+    } else {
+      logger.warn(`SFTP: no LNA file found in "${remoteDir}" — LNA sync will be skipped`);
+    }
+    if (latestSda) {
+      filesToDownload.push(latestSda);
+    } else {
+      logger.warn(`SFTP: no SDA file found in "${remoteDir}" — SDA sync will be skipped`);
+    }
 
-    for (const file of [latestCif, latestDda]) {
+    const selected = [
+      `CIF "${latestCif.name}"`,
+      `DDA "${latestDda.name}"`,
+      latestCd  ? `CD "${latestCd.name}"`   : null,
+      latestLna ? `LNA "${latestLna.name}"` : null,
+      latestSda ? `SDA "${latestSda.name}"` : null,
+    ].filter(Boolean).join(', ');
+    logger.info(`SFTP: selected ${selected}`);
+
+    for (const file of filesToDownload) {
       const remotePath = path.posix.join(remoteDir, file.name);
       const localPath = path.resolve(dataDir, file.name);
       const tempPath = path.resolve(dataDir, `Temp-${file.name}`);
@@ -87,6 +123,12 @@ async function fetchFilesFromSFTP() {
 
       if (/hubspotdda/i.test(file.name)) {
         downloaded.ddaPath = localPath;
+      } else if (/hubspotlna/i.test(file.name)) {
+        downloaded.lnaPath = localPath;
+      } else if (/hubspotsda/i.test(file.name)) {
+        downloaded.sdaPath = localPath;
+      } else if (/hubspotcd/i.test(file.name)) {
+        downloaded.cdPath = localPath;
       } else {
         downloaded.cifPath = localPath;
       }

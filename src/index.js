@@ -9,7 +9,6 @@ const { scheduleSyncCron } = require('./cron');
 validate();
 
 // Catch async errors that escaped try/catch
-
 process.on('unhandledRejection', (reason) => {
   logger.error(`Unhandled promise rejection: ${reason}`);
   process.exit(1);

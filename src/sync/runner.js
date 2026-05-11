@@ -19,14 +19,17 @@ async function triggerSync() {
   logger.info(`Sync triggered — runId=${runId}`);
   fileLogger.syncStart(runId);
 
-  const fetched = { cifPath: null, ddaPath: null };
+  const fetched = { cifPath: null, ddaPath: null, cdPath: null, lnaPath: null, sdaPath: null };
 
   try {
     logger.info('Downloading files from SFTP server...');
     const downloaded = await fetchFilesFromSFTP();
     fetched.cifPath = downloaded.cifPath;
     fetched.ddaPath = downloaded.ddaPath;
-    logger.info(`CIF: ${fetched.cifPath} | DDA: ${fetched.ddaPath}`);
+    fetched.cdPath  = downloaded.cdPath;
+    fetched.lnaPath = downloaded.lnaPath;
+    fetched.sdaPath = downloaded.sdaPath;
+    logger.info(`CIF: ${fetched.cifPath} | DDA: ${fetched.ddaPath} | CD: ${fetched.cdPath} | LNA: ${fetched.lnaPath} | SDA: ${fetched.sdaPath}`);
 
     const stats = await runSync(runId, fetched);
     logger.info(`Sync finished: ${JSON.stringify(stats)}`);
@@ -39,7 +42,7 @@ async function triggerSync() {
     lastSyncResult = { runId, completedAt: new Date().toISOString(), success: false, error: err.message };
     return { runId, error: err.message };
   } finally {
-    await cleanupFiles([fetched.cifPath, fetched.ddaPath]);
+    await cleanupFiles([fetched.cifPath, fetched.ddaPath, fetched.cdPath, fetched.lnaPath, fetched.sdaPath]);
     syncInProgress = false;
   }
 }
