@@ -12,6 +12,7 @@ const {
   updateSingleContact,
   buildContactProperties,
   batchSearchContacts,
+  batchSearchContactsByEmails,
 } = require('../services/contactService');
 const {
   buildDealProperties,
@@ -221,9 +222,51 @@ async function runSync(state, fetched) {
   await runPhase(state, 'CONTACTS_CREATE', async () => {
     if (toCreate.length === 0) return { totalBatches: 0, doneBatches: 0, succeeded: 0, failed: 0 };
 
-    const createPropsList = toCreate.map((c) => buildContactProperties(c));
-    const emailToHash = new Map();
+    // Pre-search by email to avoid 409: contacts that already exist in HubSpot
+    // by email (but were not found by taxidhashed) must be updated, not created.
+    const allEmails = toCreate.filter((c) => c.email).map((c) => c.email.toLowerCase());
+    const emailFoundMap = await batchSearchContactsByEmails(allEmails, batchSize, searchConcurrency);
+    logger.info(`CONTACTS_CREATE: email pre-check found ${emailFoundMap.size} already in HubSpot`);
+
+    const reallyToCreate = [];
+    const emailFoundUpdates = [];
+    const emailFoundEntries = [];
+    const seenEmailFoundIds = new Set();
     for (const c of toCreate) {
+      const found = c.email && emailFoundMap.get(c.email.toLowerCase());
+      if (found) {
+        emailFoundEntries.push([c.taxIdHashed, found.id]);
+        // Multiple Fiserv rows can share the same email → same HubSpot ID.
+        // Track all hash→id mappings but only send one update per HubSpot ID.
+        if (!seenEmailFoundIds.has(found.id)) {
+          seenEmailFoundIds.add(found.id);
+          emailFoundUpdates.push({ id: found.id, properties: buildContactProperties(c) });
+        }
+      } else {
+        reallyToCreate.push(c);
+      }
+    }
+
+    if (emailFoundEntries.length > 0) {
+      checkpoint.mergeContactIds(state, emailFoundEntries);
+      await resilientBatch({
+        items: emailFoundUpdates,
+        batchSize, concurrency,
+        doBatch:  (batch) => batchUpdateContacts(batch),
+        doSingle: (item)  => updateSingleContact(item),
+        runId: state.runId,
+        kind: 'contact_email_update',
+        label: 'contacts email-pre-update',
+        state, phase: 'CONTACTS_CREATE',
+      });
+      for (const { id } of emailFoundUpdates) {
+        fileLogger.contactUpdated(state.runId, { hubspotId: id });
+      }
+    }
+
+    const createPropsList = reallyToCreate.map((c) => buildContactProperties(c));
+    const emailToHash = new Map();
+    for (const c of reallyToCreate) {
       if (c.email) emailToHash.set(c.email.toLowerCase(), c.taxIdHashed);
     }
 
@@ -252,18 +295,16 @@ async function runSync(state, fetched) {
     }
     checkpoint.mergeContactIds(state, newEntries);
 
-    for (const c of toCreate) {
+    for (const c of reallyToCreate) {
       const hubspotId = state.contactIdMap[c.taxIdHashed];
       if (!hubspotId) continue;
-      if (c._conflictResolved) {
-        fileLogger.contactUpdated(state.runId, { email: c.email, hash: c.taxIdHashed, hubspotId });
-      } else {
-        fileLogger.contactCreated(state.runId, { email: c.email, hash: c.taxIdHashed, hubspotId });
-      }
+      fileLogger.contactCreated(state.runId, { email: c.email, hash: c.taxIdHashed, hubspotId });
     }
-    checkpoint.addStats(state, { contactsCreated: trueCreates, contactsUpdated: conflictUpdates });
-    logger.info(`CONTACTS_CREATE: ${trueCreates} created, ${conflictUpdates} conflict-resolved, ${failed} dead-lettered`);
-    return { succeeded, failed, trueCreates, conflictUpdates };
+
+    const totalUpdated = emailFoundEntries.length + conflictUpdates;
+    checkpoint.addStats(state, { contactsCreated: trueCreates, contactsUpdated: totalUpdated });
+    logger.info(`CONTACTS_CREATE: ${trueCreates} created, ${emailFoundEntries.length} email-pre-updated, ${conflictUpdates} conflict-resolved, ${failed} dead-lettered`);
+    return { succeeded: succeeded + emailFoundEntries.length, failed, trueCreates, conflictUpdates: totalUpdated };
   });
 
   // Build the in-memory id map deal phases need from the persisted state.

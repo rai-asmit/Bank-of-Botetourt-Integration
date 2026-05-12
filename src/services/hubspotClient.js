@@ -30,8 +30,14 @@ async function callWithRetry(fn, label) {
       return result;
     } catch (err) {
       lastError = err;
-      const isRateLimit = err.code === 429 || (err.response && err.response.status === 429);
-      const isTransient = isRateLimit || (err.response && err.response.status >= 500);
+      // SDK v11 ApiException: err.code is the numeric HTTP status.
+      // FetchError / network errors: err.code is a string (ECONNRESET, etc.) or absent.
+      const httpStatus = typeof err.code === 'number' ? err.code
+        : (err.response && err.response.status);
+      const isRateLimit   = httpStatus === 429;
+      const isServerError = typeof httpStatus === 'number' && httpStatus >= 500;
+      const isNetworkError = typeof err.code !== 'number' && !err.response; // socket hang up, ECONNRESET, etc.
+      const isTransient = isRateLimit || isServerError || isNetworkError;
 
       if (!isTransient || attempt === maxRetries) break;
 

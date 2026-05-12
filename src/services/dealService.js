@@ -187,9 +187,13 @@ function buildDealProperties(ddaDeal, hash) {
 function buildCdDealProperties(cdDeal, hash) {
   const { deals } = require('../config/config').config;
 
+  const typeDesc = cdDeal.accountLast4
+    ? `${cdDeal.typeCodeExternalDescription}-${cdDeal.accountLast4}`
+    : cdDeal.typeCodeExternalDescription;
+
   const props = {
-    dealname: cdDeal.typeCodeExternalDescription,
-    type_code_external_description: cdDeal.typeCodeExternalDescription,
+    dealname: typeDesc,
+    type_code_external_description: typeDesc,
     taxidhashed: hash,
     account_status: cdDeal.accountStatus,
     delivery_code: cdDeal.deliveryCode,
@@ -213,9 +217,13 @@ function buildCdDealProperties(cdDeal, hash) {
 function buildLnaDealProperties(lnaDeal, hash) {
   const { deals } = require('../config/config').config;
 
+  const typeDesc = lnaDeal.accountLast4
+    ? `${lnaDeal.typeCodeExternalDescription}-${lnaDeal.accountLast4}`
+    : lnaDeal.typeCodeExternalDescription;
+
   const props = {
-    dealname: lnaDeal.typeCodeExternalDescription,
-    type_code_external_description: lnaDeal.typeCodeExternalDescription,
+    dealname: typeDesc,
+    type_code_external_description: typeDesc,
     taxidhashed: hash,
     account_status: lnaDeal.accountStatus,
     pipeline: deals.pipeline,
@@ -238,9 +246,13 @@ function buildLnaDealProperties(lnaDeal, hash) {
 function buildSdaDealProperties(sdaDeal, hash) {
   const { deals } = require('../config/config').config;
 
+  const typeDesc = sdaDeal.accountLast4
+    ? `${sdaDeal.typeCodeExternalDescription}-${sdaDeal.accountLast4}`
+    : sdaDeal.typeCodeExternalDescription;
+
   const props = {
-    dealname: sdaDeal.typeCodeExternalDescription,
-    type_code_external_description: sdaDeal.typeCodeExternalDescription,
+    dealname: typeDesc,
+    type_code_external_description: typeDesc,
     taxidhashed: hash,
     account_status: sdaDeal.accountStatus,
     pipeline: deals.pipeline,

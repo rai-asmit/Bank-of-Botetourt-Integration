@@ -165,6 +165,45 @@ async function batchSearchContacts(hashes, batchSize, concurrency) {
   return merged;
 }
 
+// search HubSpot contacts by email addresses (max 100 per call)
+async function searchContactsByEmails(emails) {
+  if (emails.length === 0) return new Map();
+
+  const response = await callWithRetry(() => {
+    return getClient().crm.contacts.searchApi.doSearch({
+      filterGroups: [{
+        filters: [{
+          propertyName: 'email',
+          operator: 'IN',
+          values: emails,
+        }],
+      }],
+      properties: ['email', 'hs_object_id'],
+      limit: 100,
+    });
+  }, `searchContactsByEmails[${emails.length}]`);
+
+  const map = new Map();
+  for (const contact of response.results) {
+    const email = contact.properties.email;
+    if (email) map.set(email.toLowerCase(), contact);
+  }
+  return map;
+}
+
+async function batchSearchContactsByEmails(emails, batchSize, concurrency) {
+  const results = await runBatches(
+    chunk(emails, batchSize),
+    concurrency,
+    (batch) => searchContactsByEmails(batch)
+  );
+  const merged = new Map();
+  for (const map of results) {
+    for (const [k, v] of map) merged.set(k, v);
+  }
+  return merged;
+}
+
 module.exports = {
   searchContactsByHashes,
   batchCreateContacts,
@@ -173,4 +212,5 @@ module.exports = {
   updateSingleContact,
   buildContactProperties,
   batchSearchContacts,
+  batchSearchContactsByEmails,
 };
