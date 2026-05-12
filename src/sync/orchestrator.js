@@ -8,6 +8,8 @@ const { parseSdaFile }  = require('../parsers/sdaParser');
 const {
   batchCreateContacts,
   batchUpdateContacts,
+  createSingleContact,
+  updateSingleContact,
   buildContactProperties,
   batchSearchContacts,
   batchSearchContactsByEmail,
@@ -18,210 +20,308 @@ const {
   buildLnaDealProperties,
   buildSdaDealProperties,
 } = require('../services/dealService');
-const { chunk, runBatches } = require('../services/hubspotClient');
+const { resilientBatch } = require('../services/resilientBatch');
 const { syncAccountDeals }  = require('./dealSync');
-const logger = require('../utils/logger');
+const logger     = require('../utils/logger');
 const fileLogger = require('../utils/fileLogger');
+const deadLetter = require('../utils/deadLetter');
+const checkpoint = require('../state/checkpoint');
 const { config } = require('../config/config');
 
+// Catch obviously-invalid emails before sending them to HubSpot. Pattern:
+//   - must have exactly one "@"
+//   - local part: at least one non-space, non-@ character
+//   - domain: at least one "." and a 2+ letter TLD
+//   - reject anything that contains whitespace
+// This matches HubSpot's own validator closely enough that real emails go
+// through and placeholder rows like "NA@none.none" / "x@gmail" / "foo@bar"
+// are skipped upfront.
+const EMAIL_RX = /^[^\s@]+@[^\s@]+\.[A-Za-z]{2,}$/;
+// Known placeholder domains the bank uses for "no real email" rows.
+const PLACEHOLDER_DOMAINS = /@(none\.none|noemail|test\.test)$/i;
 
-async function runSync(runId, { cifPath, ddaPath, cdPath, lnaPath, sdaPath }) {
-  if (!cifPath) throw new Error('runSync: cifPath is required');
-  if (!ddaPath) throw new Error('runSync: ddaPath is required');
+function isLikelyValidEmail(raw) {
+  if (!raw) return false;
+  const email = String(raw).trim();
+  if (!EMAIL_RX.test(email)) return false;
+  if (PLACEHOLDER_DOMAINS.test(email)) return false;
+  return true;
+}
 
+// Run one phase with try/catch. A failure marks the phase failed_partial and
+// the next phase still runs. Catastrophic errors that propagate up here are
+// only those the caller (runner.js) chose to rethrow.
+async function runPhase(state, name, fn) {
+  if (checkpoint.isCompleted(state, name)) {
+    logger.info(`[${name}] already completed in this run — skipping`);
+    return null;
+  }
+  fileLogger.phaseStart(state.runId, name);
+  checkpoint.markPhase(state, name, { status: 'in_progress' });
+  try {
+    const result = await fn();
+    checkpoint.markPhase(state, name, { status: 'completed', ...(result && typeof result === 'object' ? result : {}) });
+    fileLogger.phaseComplete(state.runId, name, result || {});
+    return result;
+  } catch (err) {
+    logger.error(`[${name}] phase failed but pipeline continues: ${err.message}`);
+    fileLogger.phaseFailed(state.runId, name, err.message);
+    checkpoint.markPhase(state, name, { status: 'failed_partial', error: err.message });
+    return null;
+  }
+}
+
+function deduplicateCifRows(cifRows) {
+  const seen = new Map();
+  for (const row of cifRows) {
+    const existing = seen.get(row.taxIdHashed);
+    if (!existing || (!existing.email && row.email)) {
+      seen.set(row.taxIdHashed, row);
+    }
+  }
+  return Array.from(seen.values());
+}
+
+function parseAll(paths) {
+  const cifRows = paths.cifPath ? parseCifFile(paths.cifPath) : [];
+  const ddaMap  = paths.ddaPath ? parseDdaFile(paths.ddaPath) : new Map();
+  const cdMap   = paths.cdPath  ? parseCdFile(paths.cdPath)   : new Map();
+  const lnaMap  = paths.lnaPath ? parseLnaFile(paths.lnaPath) : new Map();
+  const sdaMap  = paths.sdaPath ? parseSdaFile(paths.sdaPath) : new Map();
+  return { cifRows, ddaMap, cdMap, lnaMap, sdaMap };
+}
+
+async function runSync(state, fetched) {
   const { batchSize, concurrency, searchConcurrency } = config.api;
   const startTimeMs = Date.now();
-  logger.info('=== Starting HubSpot sync (batch mode) ===');
+  logger.info('=== Starting HubSpot sync (resilient, checkpointed) ===');
 
-  // --- Parse input files ---
-  logger.info(`Parsing CIF file: ${cifPath}`);
-  const cifRows = parseCifFile(cifPath);
-  logger.info(`CIF rows loaded: ${cifRows.length}`);
+  // -----  Required inputs  -----
+  if (!fetched.cifPath) throw new Error('runSync: cifPath is required');
+  if (!fetched.ddaPath) throw new Error('runSync: ddaPath is required');
 
-  logger.info(`Parsing DDA file: ${ddaPath}`);
-  const ddaMap = parseDdaFile(ddaPath);
-  logger.info(`DDA unique customers loaded: ${ddaMap.size}`);
+  // -----  PARSE  -----
+  // Always re-parse from disk on resume (cheap, no network). The PARSE phase
+  // checkpoint records row counts so the user can see what was loaded.
+  let parsed;
+  try {
+    parsed = parseAll(fetched);
+  } catch (err) {
+    // A throw from parsing means a header was unrecoverable for one dataset.
+    // Mark PARSE failed_partial and abort the run — without parsed data we
+    // can't do anything else.
+    logger.error(`PARSE phase failed unrecoverably: ${err.message}`);
+    fileLogger.phaseFailed(state.runId, 'PARSE', err.message);
+    checkpoint.markPhase(state, 'PARSE', { status: 'failed_partial', error: err.message });
+    return state.stats;
+  }
+  checkpoint.markPhase(state, 'PARSE', {
+    status: 'completed',
+    counts: {
+      cif: parsed.cifRows.length,
+      dda: parsed.ddaMap.size,
+      cd:  parsed.cdMap.size,
+      lna: parsed.lnaMap.size,
+      sda: parsed.sdaMap.size,
+    },
+  });
+  logger.info(`PARSE: cif=${parsed.cifRows.length} dda=${parsed.ddaMap.size} cd=${parsed.cdMap.size} lna=${parsed.lnaMap.size} sda=${parsed.sdaMap.size}`);
 
-  const uniqueContacts = deduplicateCifRows(cifRows);
-  const validContacts  = uniqueContacts.filter((c) => c.email);
-  const skippedCount   = uniqueContacts.length - validContacts.length;
-  logger.info(`Unique contacts: ${uniqueContacts.length} total, ${skippedCount} skipped (no email), ${validContacts.length} to sync`);
+  const uniqueContacts = deduplicateCifRows(parsed.cifRows);
 
+  let noEmail        = 0;
+  let badEmail       = 0;
+  const validContacts = [];
   for (const c of uniqueContacts) {
-    if (!c.email) fileLogger.contactSkipped(runId, { hash: c.taxIdHashed, reason: 'no_email' });
-  }
-
-  const stats = {
-    contactsCreated: 0,
-    contactsUpdated: 0,
-    contactsSkipped: skippedCount,
-    dealsCreated: 0,
-    dealsUpdated: 0,
-  };
-
-  if (validContacts.length === 0) {
-    logger.warn('No valid contacts to sync.');
-    return stats;
-  }
-
-  // --- Resolve existing contacts (by hash, then email fallback) ---
-  logger.info('Searching HubSpot for existing contacts (batch)...');
-  const allHashes = validContacts.map((c) => c.taxIdHashed);
-  const existingContactsMap = await batchSearchContacts(allHashes, batchSize, searchConcurrency);
-  logger.info(`Found ${existingContactsMap.size} existing contacts in HubSpot by taxidhashed`);
-
-  const notFoundByHash = validContacts.filter((c) => !existingContactsMap.has(c.taxIdHashed));
-  if (notFoundByHash.length > 0) {
-    logger.info(`Searching ${notFoundByHash.length} contacts by email (fallback for missing taxidhashed)...`);
-    const emailMap = await batchSearchContactsByEmail(notFoundByHash, batchSize, searchConcurrency);
-    for (const contact of notFoundByHash) {
-      const found = emailMap.get(contact.email.toLowerCase());
-      if (!found) continue;
-
-      const existingHash = found.properties && found.properties.taxidhashed;
-      if (!existingHash) {
-        // Migration case: contact exists by email but has no taxidhashed yet → update it.
-        existingContactsMap.set(contact.taxIdHashed, found);
-      }
-      // If existingHash is set (different hash), this is a new Tax ID — let it fall through to toCreate.
+    if (!c.email) {
+      noEmail++;
+      fileLogger.contactSkipped(state.runId, { hash: c.taxIdHashed, reason: 'no_email' });
+      continue;
     }
-    logger.info(`Found ${existingContactsMap.size} total existing contacts after email fallback`);
+    if (!isLikelyValidEmail(c.email)) {
+      badEmail++;
+      fileLogger.contactSkipped(state.runId, { hash: c.taxIdHashed, reason: 'invalid_email' });
+      deadLetter.write(state.runId, 'contact_invalid_email', {
+        reason:  `pre-filter: invalid email "${c.email}"`,
+        payload: { hash: c.taxIdHashed, email: c.email },
+      });
+      continue;
+    }
+    validContacts.push(c);
   }
 
-  const toCreate = validContacts.filter((c) => !existingContactsMap.has(c.taxIdHashed));
-  const toUpdate = validContacts.filter((c) =>  existingContactsMap.has(c.taxIdHashed));
+  const skippedCount = noEmail + badEmail;
+  state.stats.contactsSkipped = skippedCount;
+  checkpoint.persist(state);
 
-  // --- Update existing contacts ---
-  if (toUpdate.length > 0) {
-    logger.info(`Updating ${toUpdate.length} existing contacts (batch)...`);
+  logger.info(`Unique contacts: ${uniqueContacts.length} total — ${noEmail} no email, ${badEmail} invalid email, ${validContacts.length} to sync`);
+
+  // -----  CONTACTS_SEARCH  -----
+  // Resolves the contactId for every taxIdHashed and persists it to state so
+  // the deal phases can resume without re-querying HubSpot.
+  let existingContactsMap = new Map();
+  await runPhase(state, 'CONTACTS_SEARCH', async () => {
+    if (validContacts.length === 0) return { existingIds: 0 };
+
+    const allHashes = validContacts.map((c) => c.taxIdHashed);
+    logger.info(`CONTACTS_SEARCH: looking up ${allHashes.length} hashes`);
+    existingContactsMap = await batchSearchContacts(allHashes, batchSize, searchConcurrency);
+    logger.info(`CONTACTS_SEARCH: found ${existingContactsMap.size} by taxidhashed`);
+
+    const notFoundByHash = validContacts.filter((c) => !existingContactsMap.has(c.taxIdHashed));
+    if (notFoundByHash.length > 0) {
+      const emailMap = await batchSearchContactsByEmail(notFoundByHash, batchSize, searchConcurrency);
+      for (const contact of notFoundByHash) {
+        const found = emailMap.get(contact.email.toLowerCase());
+        if (!found) continue;
+        const existingHash = found.properties && found.properties.taxidhashed;
+        if (!existingHash) existingContactsMap.set(contact.taxIdHashed, found);
+      }
+      logger.info(`CONTACTS_SEARCH: ${existingContactsMap.size} total after email fallback`);
+    }
+
+    // Seed contactIdMap with everyone we know about already.
+    const entries = [];
+    for (const [hash, contact] of existingContactsMap) {
+      entries.push([hash, contact.id]);
+    }
+    checkpoint.mergeContactIds(state, entries);
+    return { existingIds: existingContactsMap.size };
+  });
+
+  // If we resumed past CONTACTS_SEARCH but the in-memory map is empty,
+  // rebuild it by re-searching — cheaper than re-parsing the whole pipeline.
+  if (existingContactsMap.size === 0 && Object.keys(state.contactIdMap).length > 0) {
+    // We only have ids in state, not the full contact objects. That's fine —
+    // downstream only needs the id, available via state.contactIdMap.
+  }
+
+  const knownHashes = new Set(Object.keys(state.contactIdMap));
+  const toUpdate = validContacts.filter((c) => knownHashes.has(c.taxIdHashed));
+  const toCreate = validContacts.filter((c) => !knownHashes.has(c.taxIdHashed));
+
+  // -----  CONTACTS_UPDATE  -----
+  await runPhase(state, 'CONTACTS_UPDATE', async () => {
+    if (toUpdate.length === 0) return { totalBatches: 0, doneBatches: 0, succeeded: 0, failed: 0 };
+
     const updateInputs = toUpdate.map((c) => ({
-      id: existingContactsMap.get(c.taxIdHashed).id,
+      id: state.contactIdMap[c.taxIdHashed],
       properties: buildContactProperties(c),
     }));
 
-    await runBatches(chunk(updateInputs, batchSize), concurrency, (batch) => batchUpdateContacts(batch));
-
-    stats.contactsUpdated = toUpdate.length;
-    logger.info(`Updated ${toUpdate.length} contacts`);
+    const { succeeded, failed } = await resilientBatch({
+      items: updateInputs,
+      batchSize, concurrency,
+      doBatch:  (batch) => batchUpdateContacts(batch),
+      doSingle: (item)  => updateSingleContact(item),
+      runId: state.runId,
+      kind: 'contact_update',
+      label: 'contacts update',
+      state, phase: 'CONTACTS_UPDATE',
+    });
 
     for (const c of toUpdate) {
-      fileLogger.contactUpdated(runId, {
-        email:     c.email,
-        hash:      c.taxIdHashed,
-        hubspotId: existingContactsMap.get(c.taxIdHashed).id,
+      fileLogger.contactUpdated(state.runId, {
+        email: c.email, hash: c.taxIdHashed, hubspotId: state.contactIdMap[c.taxIdHashed],
       });
     }
-  }
+    checkpoint.addStats(state, { contactsUpdated: succeeded });
+    logger.info(`CONTACTS_UPDATE: ${succeeded} updated, ${failed} dead-lettered`);
+    return { succeeded, failed };
+  });
 
-  // --- Create new contacts ---
-  const contactIdMap = new Map();
-  for (const [hash, contact] of existingContactsMap) {
-    contactIdMap.set(hash, contact.id);
-  }
+  // -----  CONTACTS_CREATE  -----
+  await runPhase(state, 'CONTACTS_CREATE', async () => {
+    if (toCreate.length === 0) return { totalBatches: 0, doneBatches: 0, succeeded: 0, failed: 0 };
 
-  if (toCreate.length > 0) {
-    logger.info(`Creating ${toCreate.length} new contacts (batch)...`);
     const createPropsList = toCreate.map((c) => buildContactProperties(c));
     const emailToHash = new Map();
     for (const c of toCreate) {
       if (c.email) emailToHash.set(c.email.toLowerCase(), c.taxIdHashed);
     }
 
-    const createResults = await runBatches(
-      chunk(createPropsList, batchSize),
-      concurrency,
-      (batch) => batchCreateContacts(batch)
-    );
+    const { results: createResults, succeeded, failed } = await resilientBatch({
+      items: createPropsList,
+      batchSize, concurrency,
+      doBatch:  (batch) => batchCreateContacts(batch),
+      doSingle: (item)  => createSingleContact(item),
+      runId: state.runId,
+      kind: 'contact_create',
+      label: 'contacts create',
+      state, phase: 'CONTACTS_CREATE',
+    });
 
+    const newEntries = [];
     let trueCreates = 0;
     let conflictUpdates = 0;
-    for (const batchResult of createResults) {
-      for (const created of batchResult) {
-        const email = created.properties && created.properties.email;
-        const hash  = email && emailToHash.get(email.toLowerCase());
-        if (hash) {
-          contactIdMap.set(hash, created.id);
-          if (created._conflictResolved) conflictUpdates++;
-          else                           trueCreates++;
-        }
-      }
+    for (const created of createResults) {
+      if (!created || !created.properties) continue;
+      const email = created.properties.email;
+      const hash  = email && emailToHash.get(email.toLowerCase());
+      if (!hash) continue;
+      newEntries.push([hash, created.id]);
+      if (created._conflictResolved) conflictUpdates++;
+      else                           trueCreates++;
     }
-
-    stats.contactsCreated  = trueCreates;
-    stats.contactsUpdated += conflictUpdates;
-    if (trueCreates > 0)     logger.info(`Created ${trueCreates} contacts`);
-    if (conflictUpdates > 0) logger.info(`Updated ${conflictUpdates} contacts (email conflict — existing contact updated with new Tax ID hash)`);
+    checkpoint.mergeContactIds(state, newEntries);
 
     for (const c of toCreate) {
-      const hubspotId = contactIdMap.get(c.taxIdHashed);
+      const hubspotId = state.contactIdMap[c.taxIdHashed];
       if (!hubspotId) continue;
       if (c._conflictResolved) {
-        fileLogger.contactUpdated(runId, { email: c.email, hash: c.taxIdHashed, hubspotId });
+        fileLogger.contactUpdated(state.runId, { email: c.email, hash: c.taxIdHashed, hubspotId });
       } else {
-        fileLogger.contactCreated(runId, { email: c.email, hash: c.taxIdHashed, hubspotId });
+        fileLogger.contactCreated(state.runId, { email: c.email, hash: c.taxIdHashed, hubspotId });
       }
     }
+    checkpoint.addStats(state, { contactsCreated: trueCreates, contactsUpdated: conflictUpdates });
+    logger.info(`CONTACTS_CREATE: ${trueCreates} created, ${conflictUpdates} conflict-resolved, ${failed} dead-lettered`);
+    return { succeeded, failed, trueCreates, conflictUpdates };
+  });
+
+  // Build the in-memory id map deal phases need from the persisted state.
+  const contactIdMap = new Map();
+  for (const [hash, id] of Object.entries(state.contactIdMap)) {
+    contactIdMap.set(hash, id);
   }
 
-  // --- Sync deals for each account type ---
-  const dealOpts = { batchSize, concurrency, searchConcurrency, runId };
+  // -----  DEAL PHASES  -----
+  // Each dataset is its own phase so a failure in DDA does not skip CD/LNA/SDA.
+  const dealOpts = { batchSize, concurrency, searchConcurrency, runId: state.runId, state };
 
-  const ddaResult = await syncAccountDeals(ddaMap, contactIdMap, buildDealProperties, 'DDA', dealOpts);
-  stats.dealsCreated += ddaResult.created;
-  stats.dealsUpdated += ddaResult.updated;
+  await runPhase(state, 'DEALS_DDA', async () => {
+    const r = await syncAccountDeals(parsed.ddaMap, contactIdMap, buildDealProperties, 'DDA', { ...dealOpts, phase: 'DEALS_DDA' });
+    checkpoint.addStats(state, { dealsCreated: r.created, dealsUpdated: r.updated });
+    return r;
+  });
 
-  let cdMap = new Map();
-  if (cdPath) {
-    logger.info(`Parsing CD file: ${cdPath}`);
-    cdMap = parseCdFile(cdPath);
-    logger.info(`CD unique customers loaded: ${cdMap.size}`);
-  }
-  const cdResult = await syncAccountDeals(cdMap, contactIdMap, buildCdDealProperties, 'CD', dealOpts);
-  stats.dealsCreated += cdResult.created;
-  stats.dealsUpdated += cdResult.updated;
+  await runPhase(state, 'DEALS_CD', async () => {
+    const r = await syncAccountDeals(parsed.cdMap, contactIdMap, buildCdDealProperties, 'CD', { ...dealOpts, phase: 'DEALS_CD' });
+    checkpoint.addStats(state, { dealsCreated: r.created, dealsUpdated: r.updated });
+    return r;
+  });
 
-  let lnaMap = new Map();
-  if (lnaPath) {
-    logger.info(`Parsing LNA file: ${lnaPath}`);
-    lnaMap = parseLnaFile(lnaPath);
-    logger.info(`LNA unique customers loaded: ${lnaMap.size}`);
-  }
-  const lnaResult = await syncAccountDeals(lnaMap, contactIdMap, buildLnaDealProperties, 'LNA', dealOpts);
-  stats.dealsCreated += lnaResult.created;
-  stats.dealsUpdated += lnaResult.updated;
+  await runPhase(state, 'DEALS_LNA', async () => {
+    const r = await syncAccountDeals(parsed.lnaMap, contactIdMap, buildLnaDealProperties, 'LNA', { ...dealOpts, phase: 'DEALS_LNA' });
+    checkpoint.addStats(state, { dealsCreated: r.created, dealsUpdated: r.updated });
+    return r;
+  });
 
-  let sdaMap = new Map();
-  if (sdaPath) {
-    logger.info(`Parsing SDA file: ${sdaPath}`);
-    sdaMap = parseSdaFile(sdaPath);
-    logger.info(`SDA unique customers loaded: ${sdaMap.size}`);
-  }
-  const sdaResult = await syncAccountDeals(sdaMap, contactIdMap, buildSdaDealProperties, 'SDA', dealOpts);
-  stats.dealsCreated += sdaResult.created;
-  stats.dealsUpdated += sdaResult.updated;
+  await runPhase(state, 'DEALS_SDA', async () => {
+    const r = await syncAccountDeals(parsed.sdaMap, contactIdMap, buildSdaDealProperties, 'SDA', { ...dealOpts, phase: 'DEALS_SDA' });
+    checkpoint.addStats(state, { dealsCreated: r.created, dealsUpdated: r.updated });
+    return r;
+  });
 
-  // --- Summary ---
+  // -----  COMPLETE  -----
   const durationS = Math.round((Date.now() - startTimeMs) / 1000);
+  checkpoint.markPhase(state, 'COMPLETE', { status: 'completed' });
   logger.info('=== Sync complete ===');
-  logger.info(`Contacts — created: ${stats.contactsCreated}, updated: ${stats.contactsUpdated}, skipped: ${stats.contactsSkipped}`);
-  logger.info(`Deals     — created: ${stats.dealsCreated}, updated: ${stats.dealsUpdated}`);
-  fileLogger.syncComplete(runId, { ...stats, durationS });
+  logger.info(`Contacts — created: ${state.stats.contactsCreated}, updated: ${state.stats.contactsUpdated}, skipped: ${state.stats.contactsSkipped}`);
+  logger.info(`Deals     — created: ${state.stats.dealsCreated}, updated: ${state.stats.dealsUpdated}`);
+  fileLogger.syncComplete(state.runId, { ...state.stats, durationS });
 
-  return stats;
-}
-
-
-function deduplicateCifRows(cifRows) {
-  const seen = new Map();
-  for (const row of cifRows) {
-    const existing = seen.get(row.taxIdHashed);
-    // prefer a row that has an email over one that doesn't —
-    // avoids silently dropping a customer whose first CIF row has no email but a later row does
-    if (!existing || (!existing.email && row.email)) {
-      seen.set(row.taxIdHashed, row);
-    }
-  }
-  return Array.from(seen.values());
+  return state.stats;
 }
 
 module.exports = { runSync };

@@ -54,14 +54,64 @@ function selectLatestFiles(files) {
   };
 }
 
-async function fetchFilesFromSFTP() {
-  const { host, port, user, password, privateKey, remoteDir, dataDir } = config.sftp;
+// returns the local path for a previously-downloaded file if it still matches
+// the size recorded in the checkpoint; otherwise null.
+function reusableLocalPath(meta) {
+  if (!meta || !meta.path) return null;
+  try {
+    const stat = fs.statSync(meta.path);
+    if (stat.size === meta.size) return meta.path;
+  } catch (_) { /* missing or unreadable */ }
+  return null;
+}
 
+/**
+ * Fetch the latest CIF/DDA/CD/LNA/SDA files from SFTP. If `state.files`
+ * already records files that are still on disk with the same size, those
+ * are reused and we don't hit SFTP for them. If everything can be reused,
+ * we skip the SFTP connection entirely.
+ */
+async function fetchFilesFromSFTP(state = null) {
+  const { host, port, user, password, privateKey, remoteDir, dataDir } = config.sftp;
   fs.mkdirSync(dataDir, { recursive: true });
+
+  const reuse = {
+    cifPath: state ? reusableLocalPath(state.files && state.files.cif) : null,
+    ddaPath: state ? reusableLocalPath(state.files && state.files.dda) : null,
+    cdPath:  state ? reusableLocalPath(state.files && state.files.cd)  : null,
+    lnaPath: state ? reusableLocalPath(state.files && state.files.lna) : null,
+    sdaPath: state ? reusableLocalPath(state.files && state.files.sda) : null,
+  };
+
+  // If CIF and DDA (the two required files) are both reusable, skip SFTP entirely.
+  // Optional files: if state says they existed and disk has them, reuse; if
+  // state says they didn't exist (null), keep null without consulting SFTP.
+  if (state && reuse.cifPath && reuse.ddaPath) {
+    const hasCifMeta = !!(state.files && state.files.cif);
+    const hasDdaMeta = !!(state.files && state.files.dda);
+    const hasCdMeta  = !!(state.files && state.files.cd);
+    const hasLnaMeta = !!(state.files && state.files.lna);
+    const hasSdaMeta = !!(state.files && state.files.sda);
+
+    const cdOk  = !hasCdMeta  || !!reuse.cdPath;
+    const lnaOk = !hasLnaMeta || !!reuse.lnaPath;
+    const sdaOk = !hasSdaMeta || !!reuse.sdaPath;
+
+    if (hasCifMeta && hasDdaMeta && cdOk && lnaOk && sdaOk) {
+      logger.info('SFTP: all files reusable from checkpoint, skipping download');
+      return {
+        cifPath: reuse.cifPath,
+        ddaPath: reuse.ddaPath,
+        cdPath:  hasCdMeta  ? reuse.cdPath  : null,
+        lnaPath: hasLnaMeta ? reuse.lnaPath : null,
+        sdaPath: hasSdaMeta ? reuse.sdaPath : null,
+      };
+    }
+  }
 
   const sftp = new SftpClient();
 
-  const connectOptions = { host, port, username: user };
+  const connectOptions = { host, port, username: user, keepaliveInterval: 10000, keepaliveCountMax: 3 };
   if (privateKey) {
     connectOptions.privateKey = fs.readFileSync(privateKey);
   } else {
@@ -72,7 +122,13 @@ async function fetchFilesFromSFTP() {
   await sftp.connect(connectOptions);
   logger.info('SFTP: connected');
 
-  const downloaded = { cifPath: null, ddaPath: null, cdPath: null, lnaPath: null, sdaPath: null };
+  const downloaded = {
+    cifPath: reuse.cifPath,
+    ddaPath: reuse.ddaPath,
+    cdPath:  reuse.cdPath,
+    lnaPath: reuse.lnaPath,
+    sdaPath: reuse.sdaPath,
+  };
 
   try {
     logger.info(`SFTP: listing "${remoteDir}"`);
@@ -83,41 +139,55 @@ async function fetchFilesFromSFTP() {
 
     const { latestCif, latestDda, latestCd, latestLna, latestSda } = selectLatestFiles(files);
 
-    if (!latestCif) throw new Error(`SFTP: no CIF file found in "${remoteDir}"`);
-    if (!latestDda) throw new Error(`SFTP: no DDA file found in "${remoteDir}"`);
+    if (!downloaded.cifPath && !latestCif) throw new Error(`SFTP: no CIF file found in "${remoteDir}"`);
+    if (!downloaded.ddaPath && !latestDda) throw new Error(`SFTP: no DDA file found in "${remoteDir}"`);
 
-    const filesToDownload = [latestCif, latestDda];
-    if (latestCd) {
+    const filesToDownload = [];
+    if (!downloaded.cifPath) filesToDownload.push(latestCif);
+    else                     logger.info(`SFTP: reusing CIF "${path.basename(downloaded.cifPath)}" from checkpoint`);
+
+    if (!downloaded.ddaPath) filesToDownload.push(latestDda);
+    else                     logger.info(`SFTP: reusing DDA "${path.basename(downloaded.ddaPath)}" from checkpoint`);
+
+    if (!downloaded.cdPath && latestCd) {
       filesToDownload.push(latestCd);
+    } else if (downloaded.cdPath) {
+      logger.info(`SFTP: reusing CD "${path.basename(downloaded.cdPath)}" from checkpoint`);
     } else {
       logger.warn(`SFTP: no CD file found in "${remoteDir}" — CD sync will be skipped`);
     }
-    if (latestLna) {
+
+    if (!downloaded.lnaPath && latestLna) {
       filesToDownload.push(latestLna);
+    } else if (downloaded.lnaPath) {
+      logger.info(`SFTP: reusing LNA "${path.basename(downloaded.lnaPath)}" from checkpoint`);
     } else {
       logger.warn(`SFTP: no LNA file found in "${remoteDir}" — LNA sync will be skipped`);
     }
-    if (latestSda) {
+
+    if (!downloaded.sdaPath && latestSda) {
       filesToDownload.push(latestSda);
+    } else if (downloaded.sdaPath) {
+      logger.info(`SFTP: reusing SDA "${path.basename(downloaded.sdaPath)}" from checkpoint`);
     } else {
       logger.warn(`SFTP: no SDA file found in "${remoteDir}" — SDA sync will be skipped`);
     }
-
-    const selected = [
-      `CIF "${latestCif.name}"`,
-      `DDA "${latestDda.name}"`,
-      latestCd  ? `CD "${latestCd.name}"`   : null,
-      latestLna ? `LNA "${latestLna.name}"` : null,
-      latestSda ? `SDA "${latestSda.name}"` : null,
-    ].filter(Boolean).join(', ');
-    logger.info(`SFTP: selected ${selected}`);
 
     for (const file of filesToDownload) {
       const remotePath = path.posix.join(remoteDir, file.name);
       const localPath = path.resolve(dataDir, file.name);
       const tempPath = path.resolve(dataDir, `Temp-${file.name}`);
 
-      await sftp.fastGet(remotePath, tempPath);
+      try {
+        await sftp.fastGet(remotePath, tempPath);
+      } catch (err) {
+        if (!err.message.includes('ECONNRESET')) throw err;
+        logger.warn(`SFTP: connection reset downloading "${file.name}", reconnecting…`);
+        try { await sftp.end(); } catch (_) {}
+        await sftp.connect(connectOptions);
+        await sftp.fastGet(remotePath, tempPath);
+      }
+
       fs.renameSync(tempPath, localPath);
       logger.info(`SFTP: downloaded "${file.name}"`);
 

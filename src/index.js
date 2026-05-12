@@ -4,6 +4,8 @@ const { validate }        = require('./config/config');
 const app                 = require('./server');
 const logger              = require('./utils/logger');
 const { scheduleSyncCron } = require('./cron');
+const checkpoint          = require('./state/checkpoint');
+const { triggerSync }     = require('./sync/runner');
 
 // Fail fast if required env vars are missing
 validate();
@@ -27,4 +29,12 @@ app.listen(PORT, () => {
   logger.info('GET  /sync/status  — check if sync is in progress');
   logger.info('GET  /health       — health check');
   scheduleSyncCron();
+
+  // If a previous run crashed mid-flight, resume it now instead of waiting
+  // for the next cron tick.
+  const pending = checkpoint.loadActiveRun();
+  if (pending) {
+    logger.info(`Found unfinished run ${pending.runId} at phase ${pending.phase} — resuming on startup`);
+    triggerSync().catch((err) => logger.error(`Resume-on-boot failed: ${err.message}`));
+  }
 });

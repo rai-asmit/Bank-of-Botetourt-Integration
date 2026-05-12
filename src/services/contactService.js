@@ -92,6 +92,35 @@ async function batchUpdateContacts(updates) {
   return response.results;
 }
 
+// single-record fallbacks used by resilientBatch when a whole batch fails
+
+async function createSingleContact(properties) {
+  try {
+    const created = await callWithRetry(() => {
+      return getClient().crm.contacts.basicApi.create({ properties });
+    }, `createContact[${properties.email}]`);
+    return created;
+  } catch (err) {
+    const status = err.code || (err.response && err.response.status);
+    if (status !== 409) throw err;
+
+    // duplicate email — fall back to updating the existing contact
+    const existingId = extractExistingId(err);
+    if (!existingId) throw err;
+    await callWithRetry(() => {
+      return getClient().crm.contacts.basicApi.update(existingId, { properties });
+    }, `updateConflictContact[${existingId}]`);
+    return { id: existingId, properties: { email: properties.email }, _conflictResolved: true };
+  }
+}
+
+async function updateSingleContact({ id, properties }) {
+  const updated = await callWithRetry(() => {
+    return getClient().crm.contacts.basicApi.update(String(id), { properties });
+  }, `updateContact[${id}]`);
+  return updated;
+}
+
 // build HubSpot property object from a contact
 function buildContactProperties(contact) {
   const props = {
@@ -181,6 +210,8 @@ module.exports = {
   searchContactsByEmails,
   batchCreateContacts,
   batchUpdateContacts,
+  createSingleContact,
+  updateSingleContact,
   buildContactProperties,
   batchSearchContacts,
   batchSearchContactsByEmail,

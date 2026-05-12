@@ -126,6 +126,26 @@ const fileLogger = {
     write('error', 'sync', 'FAILED', { runId, reason: message });
   },
 
+  syncResume(runId, phase) {
+    write('info', 'sync', 'RESUME', { runId, phase });
+  },
+
+  phaseStart(runId, phase) {
+    write('info', 'sync', 'PHASE_START', { runId, phase });
+  },
+
+  phaseComplete(runId, phase, fields = {}) {
+    write('info', 'sync', 'PHASE_DONE', { runId, phase, ...fields });
+  },
+
+  phaseFailed(runId, phase, message) {
+    write('error', 'sync', 'PHASE_FAIL', { runId, phase, reason: message });
+  },
+
+  deadLetter(runId, kind, count) {
+    write('warn', 'sync', 'DEAD_LTR', { runId, kind, count });
+  },
+
   // contact event logs → contacts.log
   contactCreated(runId, { email, hash, hubspotId }) {
     write('info', 'contacts', 'CREATED', { runId, email, hash, hubspot_id: hubspotId });

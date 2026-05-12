@@ -16,15 +16,18 @@ const config = {
     port:       parseInt(process.env.SFTP_PORT || '22', 10),
     user:       process.env.SFTP_USER       || '',
     password:   process.env.SFTP_PASSWORD   || '',
-    privateKey: process.env.SFTP_PRIVATE_KEY || '', 
-    remoteDir:  process.env.SFTP_REMOTE_DIR || '/', 
-    dataDir:    process.env.DATA_DIR        || './data', 
+    privateKey: process.env.SFTP_PRIVATE_KEY || '',
+    remoteDir:  process.env.SFTP_REMOTE_DIR || '/',
+    dataDir:    process.env.DATA_DIR        || './data',
+  },
+  state: {
+    dir: process.env.STATE_DIR || './state',
   },
   api: {
     delayMs: 110,        
     maxRetries: 3,       // retry attempts
     retryDelayMs: 1000,  // base delay before retry 
-    batchSize: 100,      // max records per batch API call 
+    batchSize: 50,       // max records per batch API call (lower = fewer retries on a poison record)
     concurrency: 5,      // max parallel batch request
     searchConcurrency: 1, // CRM Search API 
   },

@@ -1,10 +1,12 @@
 'use strict';
 
 const fs = require('fs');
-const { parse } = require('csv-parse/sync');
+const { safeParseCsv } = require('../utils/safeCsvParse');
 const { hashTaxId } = require('../utils/hash');
 const { parseFiservDate } = require('../utils/dateUtils');
 const { buildColMap } = require('../utils/colMap');
+const { escapeFiservCsv } = require('../utils/csvPreprocess');
+const logger = require('../utils/logger');
 
 const EXPECTED_COLUMNS = {
   TAX_ID:               'Tax ID Number',
@@ -20,13 +22,9 @@ const EXPECTED_COLUMNS = {
 };
 
 function parseDdaFile(filePath) {
-  const raw = fs.readFileSync(filePath, 'utf8');
+  const raw = escapeFiservCsv(fs.readFileSync(filePath, 'utf8'));
 
-  const allRows = parse(raw, {
-    relax_quotes: true,
-    skip_empty_lines: true,
-    trim: true,
-  });
+  const allRows = safeParseCsv(raw, { trim: true }, 'DDA');
 
   const COL = buildColMap(allRows[0], allRows[1], EXPECTED_COLUMNS, 'DDA');
   const minCols = Math.max(...Object.values(COL)) + 1;
@@ -36,8 +34,15 @@ function parseDdaFile(filePath) {
 
   const ddaMap = new Map();
 
-  for (const row of dataRows) {
-    const deal = mapDdaRow(row, COL, minCols);
+  for (let i = 0; i < dataRows.length; i++) {
+    const fileRowNum = i + 3;
+    let deal;
+    try {
+      deal = mapDdaRow(dataRows[i], COL, minCols, fileRowNum);
+    } catch (err) {
+      logger.error(`[DDA] Row ${fileRowNum}: unexpected error — ${err.message}`);
+      continue;
+    }
     if (!deal) continue;
 
     if (!ddaMap.has(deal.taxIdHashed)) {
@@ -49,11 +54,17 @@ function parseDdaFile(filePath) {
   return ddaMap;
 }
 
-function mapDdaRow(row, COL, minCols) {
-  if (row.length < minCols) return null;
+function mapDdaRow(row, COL, minCols, fileRowNum) {
+  if (row.length < minCols) {
+    logger.warn(`[DDA] Row ${fileRowNum}: skipping — expected ${minCols} columns, got ${row.length}`);
+    return null;
+  }
 
   const taxIdRaw = row[COL.TAX_ID] || '';
-  if (!taxIdRaw.trim()) return null;
+  if (!taxIdRaw.trim()) {
+    logger.warn(`[DDA] Row ${fileRowNum}: skipping — missing Tax ID`);
+    return null;
+  }
 
   const accountNumberMasked = (row[COL.ACCOUNT_NUMBER_MASKED] || '').trim();
   const accountLast4 = accountNumberMasked.slice(-4);

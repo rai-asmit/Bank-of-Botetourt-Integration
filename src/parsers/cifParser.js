@@ -1,10 +1,12 @@
 'use strict';
 
 const fs = require('fs');
-const { parse } = require('csv-parse/sync');
+const { safeParseCsv } = require('../utils/safeCsvParse');
 const { hashTaxId } = require('../utils/hash');
 const { parseFiservDate } = require('../utils/dateUtils');
 const { buildColMap } = require('../utils/colMap');
+const { escapeFiservCsv } = require('../utils/csvPreprocess');
+const logger = require('../utils/logger');
 
 // Human-readable column labels as they appear when the two Fiserv header rows
 // are merged (row0 + " " + row1, trimmed).  buildColMap resolves each to its
@@ -34,13 +36,9 @@ const EXPECTED_COLUMNS = {
 };
 
 function parseCifFile(filePath) {
-  const raw = fs.readFileSync(filePath, 'utf8');
+  const raw = escapeFiservCsv(fs.readFileSync(filePath, 'utf8'));
 
-  const allRows = parse(raw, {
-    relax_quotes: true,
-    skip_empty_lines: true,
-    trim: true,
-  });
+  const allRows = safeParseCsv(raw, { trim: true }, 'CIF');
 
   // Resolve column positions dynamically from the two-row Fiserv header
   const COL = buildColMap(allRows[0], allRows[1], EXPECTED_COLUMNS, 'CIF');
@@ -49,16 +47,32 @@ function parseCifFile(filePath) {
   // First 2 rows are the two-line header — skip them
   const dataRows = allRows.slice(2);
 
-  return dataRows
-    .map((row) => mapCifRow(row, COL, minCols))
-    .filter((contact) => contact !== null);
+  const contacts = [];
+  for (let i = 0; i < dataRows.length; i++) {
+    const fileRowNum = i + 3; // 2 header rows, 1-indexed
+    let contact;
+    try {
+      contact = mapCifRow(dataRows[i], COL, minCols, fileRowNum);
+    } catch (err) {
+      logger.error(`[CIF] Row ${fileRowNum}: unexpected error — ${err.message}`);
+      continue;
+    }
+    if (contact) contacts.push(contact);
+  }
+  return contacts;
 }
 
-function mapCifRow(row, COL, minCols) {
-  if (row.length < minCols) return null;
+function mapCifRow(row, COL, minCols, fileRowNum) {
+  if (row.length < minCols) {
+    logger.warn(`[CIF] Row ${fileRowNum}: skipping — expected ${minCols} columns, got ${row.length}`);
+    return null;
+  }
 
   const taxIdRaw = row[COL.TAX_ID] || '';
-  if (!taxIdRaw.trim()) return null;
+  if (!taxIdRaw.trim()) {
+    logger.warn(`[CIF] Row ${fileRowNum}: skipping — missing Tax ID`);
+    return null;
+  }
 
   return {
     taxIdRaw,

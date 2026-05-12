@@ -93,6 +93,26 @@ async function batchUpdateDeals(updates) {
 }
 
 
+async function createSingleDeal({ properties, contactId }) {
+  const response = await callWithRetry(() => {
+    return getClient().crm.deals.basicApi.create({
+      properties,
+      associations: contactId ? [{
+        to: { id: String(contactId) },
+        types: [{ associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 3 }],
+      }] : [],
+    });
+  }, `createDeal[${properties.taxidhashed}]`);
+  return response;
+}
+
+async function updateSingleDeal({ id, properties }) {
+  const response = await callWithRetry(() => {
+    return getClient().crm.deals.basicApi.update(String(id), { properties });
+  }, `updateDeal[${id}]`);
+  return response;
+}
+
 async function batchAssociateDeals(associations) {
   if (associations.length === 0) return;
 
@@ -273,6 +293,8 @@ module.exports = {
   batchSearchDeals,
   batchCreateDeals,
   batchUpdateDeals,
+  createSingleDeal,
+  updateSingleDeal,
   batchAssociateDeals,
   findDealByCompositeKey,
   buildDealProperties,

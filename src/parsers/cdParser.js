@@ -1,10 +1,12 @@
 'use strict';
 
 const fs = require('fs');
-const { parse } = require('csv-parse/sync');
+const { safeParseCsv } = require('../utils/safeCsvParse');
 const { hashTaxId } = require('../utils/hash');
 const { parseFiservDate } = require('../utils/dateUtils');
 const { buildColMap } = require('../utils/colMap');
+const { escapeFiservCsv } = require('../utils/csvPreprocess');
+const logger = require('../utils/logger');
 
 // The CD file has two columns with the identical merged label "Status Desc"
 // (columns 5 and 6 — a duplicate Status Desc Fiserv includes).  buildColMap
@@ -23,13 +25,9 @@ const EXPECTED_COLUMNS = {
 };
 
 function parseCdFile(filePath) {
-  const raw = fs.readFileSync(filePath, 'utf8');
+  const raw = escapeFiservCsv(fs.readFileSync(filePath, 'utf8'));
 
-  const allRows = parse(raw, {
-    relax_quotes: true,
-    skip_empty_lines: true,
-    trim: true,
-  });
+  const allRows = safeParseCsv(raw, { trim: true }, 'CD');
 
   const COL = buildColMap(allRows[0], allRows[1], EXPECTED_COLUMNS, 'CD');
   const minCols = Math.max(...Object.values(COL)) + 1;
@@ -39,8 +37,15 @@ function parseCdFile(filePath) {
 
   const cdMap = new Map();
 
-  for (const row of dataRows) {
-    const deal = mapCdRow(row, COL, minCols);
+  for (let i = 0; i < dataRows.length; i++) {
+    const fileRowNum = i + 3;
+    let deal;
+    try {
+      deal = mapCdRow(dataRows[i], COL, minCols, fileRowNum);
+    } catch (err) {
+      logger.error(`[CD] Row ${fileRowNum}: unexpected error — ${err.message}`);
+      continue;
+    }
     if (!deal) continue;
 
     if (!cdMap.has(deal.taxIdHashed)) {
@@ -52,11 +57,17 @@ function parseCdFile(filePath) {
   return cdMap;
 }
 
-function mapCdRow(row, COL, minCols) {
-  if (row.length < minCols) return null;
+function mapCdRow(row, COL, minCols, fileRowNum) {
+  if (row.length < minCols) {
+    logger.warn(`[CD] Row ${fileRowNum}: skipping — expected ${minCols} columns, got ${row.length}`);
+    return null;
+  }
 
   const taxIdRaw = row[COL.TAX_ID] || '';
-  if (!taxIdRaw.trim()) return null;
+  if (!taxIdRaw.trim()) {
+    logger.warn(`[CD] Row ${fileRowNum}: skipping — missing Tax ID`);
+    return null;
+  }
 
   const accountNumberMasked = (row[COL.ACCOUNT_NUMBER_MASKED] || '').trim();
   const accountLast4 = accountNumberMasked.slice(-4);

@@ -5,6 +5,10 @@
 node_modules/
 
 # Downloaded CSV data files
+data/
+
+# Sync checkpoint state
+state/
 
 # Sample, task, and spec folders
 sample/
