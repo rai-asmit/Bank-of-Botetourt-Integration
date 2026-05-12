@@ -7,11 +7,12 @@ const { config }      = require('./config/config');
 
 function scheduleSyncCron() {
   const schedule = config.syncCron;
+  const timezone = config.syncTimezone;
   cron.schedule(schedule, async () => {
-    logger.info(`Cron: starting scheduled sync (${schedule})`);
+    logger.info(`Cron: starting scheduled sync (${schedule} ${timezone})`);
     await triggerSync();
-  });
-  logger.info(`Sync cron scheduled: ${schedule}`);
+  }, { timezone });
+  logger.info(`Sync cron scheduled: ${schedule} (${timezone})`);
 }
 
 module.exports = { scheduleSyncCron };

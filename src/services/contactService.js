@@ -152,32 +152,6 @@ function buildContactProperties(contact) {
   return props;
 }
 
-// search contacts by email, fallback when hash is missing
-async function searchContactsByEmails(emails) {
-  if (emails.length === 0) return new Map();
-
-  const response = await callWithRetry(() => {
-    return getClient().crm.contacts.searchApi.doSearch({
-      filterGroups: [{
-        filters: [{
-          propertyName: 'email',
-          operator: 'IN',
-          values: emails,
-        }],
-      }],
-      properties: ['taxidhashed', 'email', 'hs_object_id'],
-      limit: 100,
-    });
-  }, `searchContactsByEmail[${emails.length}]`);
-
-  const map = new Map();
-  for (const contact of response.results) {
-    const email = contact.properties.email;
-    if (email) map.set(email.toLowerCase(), contact);
-  }
-  return map;
-}
-
 async function batchSearchContacts(hashes, batchSize, concurrency) {
   const results = await runBatches(
     chunk(hashes, batchSize),
@@ -191,28 +165,12 @@ async function batchSearchContacts(hashes, batchSize, concurrency) {
   return merged;
 }
 
-async function batchSearchContactsByEmail(contacts, batchSize, concurrency) {
-  const emails = contacts.map((c) => c.email);
-  const results = await runBatches(
-    chunk(emails, batchSize),
-    concurrency,
-    (batch) => searchContactsByEmails(batch)
-  );
-  const merged = new Map();
-  for (const map of results) {
-    for (const [k, v] of map) merged.set(k, v);
-  }
-  return merged;
-}
-
 module.exports = {
   searchContactsByHashes,
-  searchContactsByEmails,
   batchCreateContacts,
   batchUpdateContacts,
   createSingleContact,
   updateSingleContact,
   buildContactProperties,
   batchSearchContacts,
-  batchSearchContactsByEmail,
 };

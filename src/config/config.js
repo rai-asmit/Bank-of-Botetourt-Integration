@@ -31,7 +31,8 @@ const config = {
     concurrency: 5,      // max parallel batch request
     searchConcurrency: 1, // CRM Search API 
   },
-  syncCron: process.env.SYNC_CRON || '0 2 * * *',
+  syncCron: process.env.SYNC_CRON || '15 0 * * *',
+  syncTimezone: process.env.SYNC_TIMEZONE || 'America/New_York',
   deals: {
     pipeline: process.env.DEAL_PIPELINE_ID || '',
     stage: process.env.DEAL_STAGE_ID || '',

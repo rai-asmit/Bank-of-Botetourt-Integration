@@ -83,10 +83,12 @@ async function syncAccountDeals(accountMap, contactIdMap, buildPropsFn, label, o
     for (const row of rows) {
       if (!row.dateOpened) {
         logger.warn(`${label}: skipping row (hash=${hash}) — dateOpened is missing, cannot form composite key`);
+        fileLogger.dealSkipped(runId, { hash, reason: 'missing_date_opened', type: label });
         continue;
       }
       if (!row.accountLast4) {
         logger.warn(`${label}: skipping row (hash=${hash}) — accountLast4 is empty, cannot form composite key`);
+        fileLogger.dealSkipped(runId, { hash, reason: 'missing_account_last4', type: label });
         continue;
       }
 
@@ -121,7 +123,7 @@ async function syncAccountDeals(accountMap, contactIdMap, buildPropsFn, label, o
       phase,
     });
     for (const d of dealsToUpdate) {
-      fileLogger.dealUpdated(runId, { hash: d.properties.taxidhashed, dealId: d.id });
+      fileLogger.dealUpdated(runId, { hash: d.properties.taxidhashed, dealId: d.id, type: label });
     }
     totalFailed += failed;
     logger.info(`${label}: updated ${succeeded} deals (${failed} dead-lettered)`);
@@ -145,11 +147,11 @@ async function syncAccountDeals(accountMap, contactIdMap, buildPropsFn, label, o
 
     for (const deal of createResults) {
       if (!deal || !deal.properties) continue;
-      const key = `${deal.properties.taxidhashed}|${deal.properties.date_opened}`;
+      const key = `${deal.properties.taxidhashed}|${deal.properties.date_opened}|${deal.properties.account_last_4 || ''}`;
       createdDealIdMap.set(key, deal.id);
     }
     for (const d of dealsToCreate) {
-      const key = `${d.properties.taxidhashed}|${d.properties.date_opened}`;
+      const key = `${d.properties.taxidhashed}|${d.properties.date_opened}|${d.properties.account_last_4 || ''}`;
       const dealId = createdDealIdMap.get(key);
       if (!dealId) continue;
       fileLogger.dealCreated(runId, {
@@ -158,6 +160,7 @@ async function syncAccountDeals(accountMap, contactIdMap, buildPropsFn, label, o
         dealId,
         dealname:   d.properties.dealname,
         dateOpened: d.properties.date_opened,
+        type:       label,
       });
     }
     totalFailed += failed;

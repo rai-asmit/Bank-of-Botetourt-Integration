@@ -75,30 +75,45 @@ function fmtJson(level, category, action, fields) {
   return JSON.stringify(entry) + '\n';
 }
 
-// write one log line, also mirror errors to errors.log
-function write(level, category, action, fields) {
+function appendLine(dir, category, line) {
+  try {
+    fs.appendFileSync(logPath(dir, category), line);
+  } catch (e) {
+    console.error(`[fileLogger] write failed (${category}.log): ${e.message}`);
+  }
+}
+
+// write one log line. Always writes to <category>.log. Additionally:
+//   - mirrors warn+error to <category>-error.log (per-category error file)
+//   - mirrors error to global errors.log (aggregate)
+//   - writes to any extra `mirrors` files (e.g. deals-sda for per-type split)
+function write(level, category, action, fields, { mirrors = [] } = {}) {
   const conf = cfg();
 
-  // skip if below minimum log level
   const minOrder = LEVEL_ORDER[conf.level] ?? 0;
   if ((LEVEL_ORDER[level] ?? 0) < minOrder) return;
 
   const formatter = conf.format === 'json' ? fmtJson : fmtText;
   const line = formatter(level, category, action, fields);
 
-  try {
-    fs.appendFileSync(logPath(conf.dir, category), line);
-  } catch (e) {
-    console.error(`[fileLogger] write failed (${category}.log): ${e.message}`);
+  appendLine(conf.dir, category, line);
+
+  for (const m of mirrors) {
+    if (m) appendLine(conf.dir, m, line);
   }
 
-  // also write errors to errors.log
+  // Per-category error file: warn + error from contacts/deals/sync go to
+  // <category>-error.log so operators can scan failures without wading through
+  // successful events. Skip categories that are themselves error sinks.
+  if ((level === 'warn' || level === 'error')
+      && category !== 'errors'
+      && !category.endsWith('-error')) {
+    appendLine(conf.dir, `${category}-error`, line);
+  }
+
+  // Global aggregate of every error across categories.
   if (level === 'error' && category !== 'errors') {
-    try {
-      fs.appendFileSync(logPath(conf.dir, 'errors'), line);
-    } catch (e) {
-      console.error(`[fileLogger] write failed (errors.log): ${e.message}`);
-    }
+    appendLine(conf.dir, 'errors', line);
   }
 }
 
@@ -159,20 +174,30 @@ const fileLogger = {
     write('warn', 'contacts', 'SKIPPED', { runId, hash, reason });
   },
 
-  // deal event logs → deals.log
-  dealCreated(runId, { hash, contactId, dealId, dealname, dateOpened }) {
+  // deal event logs → deals.log + deals-<type>.log (e.g. deals-sda.log)
+  dealCreated(runId, { hash, contactId, dealId, dealname, dateOpened, type }) {
+    const typeMirror = type ? `deals-${String(type).toLowerCase()}` : null;
     write('info', 'deals', 'CREATED', {
       runId,
+      type,
       hash,
       contact_id:  contactId,
       deal_id:     dealId,
       dealname,
       date_opened: dateOpened,
-    });
+    }, { mirrors: [typeMirror] });
   },
 
-  dealUpdated(runId, { hash, dealId }) {
-    write('info', 'deals', 'UPDATED', { runId, hash, deal_id: dealId });
+  dealUpdated(runId, { hash, dealId, type }) {
+    const typeMirror = type ? `deals-${String(type).toLowerCase()}` : null;
+    write('info', 'deals', 'UPDATED', { runId, type, hash, deal_id: dealId },
+      { mirrors: [typeMirror] });
+  },
+
+  dealSkipped(runId, { hash, reason, type }) {
+    const typeMirror = type ? `deals-${String(type).toLowerCase()}` : null;
+    write('warn', 'deals', 'SKIPPED', { runId, type, hash, reason },
+      { mirrors: [typeMirror] });
   },
 
   // general error logs → errors.log

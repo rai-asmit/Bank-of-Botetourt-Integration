@@ -12,7 +12,6 @@ const {
   updateSingleContact,
   buildContactProperties,
   batchSearchContacts,
-  batchSearchContactsByEmail,
 } = require('../services/contactService');
 const {
   buildDealProperties,
@@ -167,18 +166,6 @@ async function runSync(state, fetched) {
     logger.info(`CONTACTS_SEARCH: looking up ${allHashes.length} hashes`);
     existingContactsMap = await batchSearchContacts(allHashes, batchSize, searchConcurrency);
     logger.info(`CONTACTS_SEARCH: found ${existingContactsMap.size} by taxidhashed`);
-
-    const notFoundByHash = validContacts.filter((c) => !existingContactsMap.has(c.taxIdHashed));
-    if (notFoundByHash.length > 0) {
-      const emailMap = await batchSearchContactsByEmail(notFoundByHash, batchSize, searchConcurrency);
-      for (const contact of notFoundByHash) {
-        const found = emailMap.get(contact.email.toLowerCase());
-        if (!found) continue;
-        const existingHash = found.properties && found.properties.taxidhashed;
-        if (!existingHash) existingContactsMap.set(contact.taxIdHashed, found);
-      }
-      logger.info(`CONTACTS_SEARCH: ${existingContactsMap.size} total after email fallback`);
-    }
 
     // Seed contactIdMap with everyone we know about already.
     const entries = [];
